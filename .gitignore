@@ -21,15 +21,5 @@ build/
 .jarvis_kb/
 
 # Large data / models / training artifacts
-data/
-models/
 wake word data/
-*.onnx
-*.npy
-*.db
-*.sqlite
-*.sqlite3
 
-# OS
-Thumbs.db
-.DS_Store
