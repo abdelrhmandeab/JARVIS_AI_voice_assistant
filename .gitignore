@@ -20,8 +20,3 @@ build/
 .jarvis_cache/
 .jarvis_kb/
 
-# Large data / models / training artifacts
-
-# Exceeds GitHub's 100MB file limit
-data/index/jarvis_index.db
-
