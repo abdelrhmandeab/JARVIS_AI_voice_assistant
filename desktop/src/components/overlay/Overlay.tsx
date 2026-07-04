@@ -76,7 +76,17 @@ export function Overlay({ send }: OverlayProps) {
           }}
         />
         <main className="flex flex-1 flex-col items-center justify-center gap-5 px-4">
-          <Avatar />
+          <button
+            type="button"
+            onClick={() => {
+              void openDashboard();
+            }}
+            aria-label="Open dashboard"
+            title="Open dashboard"
+            className="appearance-none rounded-3xl border-none bg-transparent p-0 transition-transform duration-200 hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+          >
+            <Avatar />
+          </button>
           <Transcript />
         </main>
 

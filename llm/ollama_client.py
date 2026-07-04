@@ -139,6 +139,11 @@ def get_runtime_lightweight_num_ctx(default=None):
     return int(value)
 
 
+def get_runtime_model(default=None):
+    """Return the runtime-selected model name if set, else fallback default."""
+    return _runtime_model if _runtime_model else default
+
+
 def get_runtime_model_tier(default="medium"):
     """Return the runtime-selected model tier for prompt selection.
     
