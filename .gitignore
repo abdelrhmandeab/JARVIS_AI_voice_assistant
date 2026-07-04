@@ -23,3 +23,6 @@ build/
 # Large data / models / training artifacts
 wake word data/
 
+# Exceeds GitHub's 100MB file limit
+data/index/jarvis_index.db
+
