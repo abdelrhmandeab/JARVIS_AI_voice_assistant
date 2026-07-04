@@ -80,6 +80,8 @@ BACK_MATTER = [
     ("appendix", "Appendices"),
 ]
 
+FRONT_MATTER_TITLES = {title for _, title in FRONT_MATTER}
+
 
 def rgb(hex_color: str) -> RGBColor:
     return RGBColor.from_string(hex_color.upper())
@@ -191,6 +193,7 @@ def configure_styles(document: Document) -> None:
     caption.font.name = "Calibri"
     caption.font.size = Pt(9)
     caption.font.italic = True
+    caption.font.bold = False
     caption.font.color.rgb = rgb(PALETTE["muted"])
     caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -3156,6 +3159,892 @@ def fill_phase3(doc_path: Path = DOC_PATH) -> Path:
     return insert_generated_content(doc_path, "c4-memdata", add_phase3_content)
 
 
+def add_conceptual_overview_diagram() -> Path:
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = FIGURE_DIR / "figure_1_1_1_conceptual_overview.png"
+    width, height = 1900, 620
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 50)
+        font = ImageFont.truetype("arial.ttf", 28)
+        small_font = ImageFont.truetype("arial.ttf", 21)
+    except OSError:
+        title_font = font = small_font = ImageFont.load_default()
+    colors = {
+        "ink": "#1a2230", "muted": "#5b6675", "line": "#dde3ec",
+        "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
+        "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
+    }
+    draw.text((70, 40), "Figure 1.1 - Conceptual turn cycle", fill=colors["ink"], font=title_font)
+    draw.text((70, 100), "The seven-stage loop that every spoken turn passes through, bilingually.", fill=colors["muted"], font=small_font)
+    stages = [
+        ("Wake", "unified EN/EGY ONNX", colors["blue"]),
+        ("Record", "VAD-gated capture", colors["blue"]),
+        ("STT", "language-locked transcript", colors["purple"]),
+        ("Understand", "routing cascade", colors["purple"]),
+        ("Act / Answer", "OS control or LLM", colors["amber"]),
+        ("Speak", "streamed TTS", colors["green"]),
+    ]
+    x = 60
+    y = 260
+    box_w, box_h, gap = 260, 150, 55
+    for i, (title, subtitle, color) in enumerate(stages):
+        draw.rounded_rectangle((x, y, x + box_w, y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, y, x + 12, y + box_h), fill=color)
+        draw.text((x + 26, y + 34), title, fill=colors["ink"], font=font)
+        draw.text((x + 26, y + 82), subtitle, fill=colors["muted"], font=small_font)
+        if i < len(stages) - 1:
+            ax = x + box_w
+            draw.line((ax, y + box_h // 2, ax + gap, y + box_h // 2), fill=colors["line"], width=5)
+            draw.polygon(
+                [(ax + gap, y + box_h // 2), (ax + gap - 14, y + box_h // 2 - 8), (ax + gap - 14, y + box_h // 2 + 8)],
+                fill=colors["line"],
+            )
+        x += box_w + gap
+    draw.text((70, 460), "Loop closes back to Wake after Speak; a wake-word interrupt during Act/Answer/Speak cancels the in-flight stage.", fill=colors["muted"], font=small_font)
+    image.save(path, quality=95)
+    return path
+
+
+def add_layered_architecture_diagram() -> Path:
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = FIGURE_DIR / "figure_3_1_1_layered_architecture.png"
+    width, height = 1900, 1160
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 50)
+        font = ImageFont.truetype("arial.ttf", 27)
+        small_font = ImageFont.truetype("arial.ttf", 21)
+    except OSError:
+        title_font = font = small_font = ImageFont.load_default()
+    colors = {
+        "ink": "#1a2230", "muted": "#5b6675", "line": "#dde3ec",
+        "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
+        "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
+    }
+    draw.text((70, 35), "Figure 3.1 - Layered architecture", fill=colors["ink"], font=title_font)
+    draw.text((70, 95), "Five horizontal layers; core/ is the control plane that every other layer reports to.", fill=colors["muted"], font=small_font)
+
+    layers = [
+        ("I/O Layer", "audio/ (wake, VAD, STT, TTS)", colors["blue"], 150),
+        ("Understanding Layer", "nlp/ (code-switch, semantic, fuzzy, keyword, slots)", colors["purple"], 320),
+        ("Control Plane", "core/ (orchestrator, router, verifier, memory, persona, metrics)", colors["amber"], 490),
+        ("Action / Answer Layer", "os_control/, tools/, llm/ (verified side effects and generation)", colors["green"], 660),
+        ("Presentation Layer", "ui/ + desktop/ (optional tray + WebSocket bridge + Tauri UI)", colors["grey"], 830),
+    ]
+    for title, subtitle, color, y in layers:
+        draw.rounded_rectangle((90, y, 1810, y + 130), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((90, y, 102, y + 130), fill=color)
+        draw.text((130, y + 24), title, fill=colors["ink"], font=font)
+        draw.text((130, y + 72), subtitle, fill=colors["muted"], font=small_font)
+        if y != 830:
+            draw.line((950, y + 130, 950, y + 190), fill=colors["line"], width=5)
+            draw.polygon([(950, y + 190), (942, y + 176), (958, y + 176)], fill=colors["line"])
+    draw.text((70, 990), "data/ (persisted memory, vectors, logs, wake-word artifacts) and models/ back every layer above without owning behavior.", fill=colors["ink"], font=font)
+    draw.text((70, 1035), "Cross-reference: audio/ = Sec 4.4, nlp/ = Sec 4.6, core/ = Sec 4.2, os_control/tools/llm = Sec 4.7-4.9, ui/desktop = Sec 4.11.", fill=colors["muted"], font=small_font)
+    image.save(path, quality=95)
+    return path
+
+
+def add_runtime_pipeline_diagram() -> Path:
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = FIGURE_DIR / "figure_3_2_1_runtime_pipeline.png"
+    width, height = 1900, 760
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 46)
+        font = ImageFont.truetype("arial.ttf", 24)
+        small_font = ImageFont.truetype("arial.ttf", 18)
+    except OSError:
+        title_font = font = small_font = ImageFont.load_default()
+    colors = {
+        "ink": "#1a2230", "muted": "#5b6675", "line": "#dde3ec",
+        "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
+        "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
+    }
+    draw.text((60, 30), "Figure 3.2 - Runtime pipeline", fill=colors["ink"], font=title_font)
+    draw.text((60, 82), "Single turn, per orchestrator.run() - top row then bottom row, left to right.", fill=colors["muted"], font=small_font)
+    stages = [
+        ("wake_word.py", "EMA+peak gate", colors["blue"]),
+        ("mic.py", "VAD capture", colors["blue"]),
+        ("stt.py", "lang-locked text", colors["purple"]),
+        ("command_router.py", "routing cascade", colors["purple"]),
+        ("route_verifier.py", "execute/clarify/confirm/llm", colors["amber"]),
+        ("dispatch", "handlers / os_control / llm", colors["amber"]),
+        ("response_shaper.py", "voice-safe text", colors["green"]),
+        ("tts.py", "sentence-streamed audio", colors["green"]),
+    ]
+    box_w, box_h, gap_x, gap_y = 440, 150, 30, 40
+    cols = 4
+    start_x, start_y = 55, 170
+    for i, (title, subtitle, color) in enumerate(stages):
+        row, col = divmod(i, cols)
+        x = start_x + col * (box_w + gap_x)
+        y = start_y + row * (box_h + gap_y)
+        draw.rounded_rectangle((x, y, x + box_w, y + box_h), radius=14, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, y, x + 10, y + box_h), fill=color)
+        draw.text((x + 24, y + 30), title, fill=colors["ink"], font=font)
+        draw.text((x + 24, y + 84), subtitle, fill=colors["muted"], font=small_font)
+        if col < cols - 1:
+            ax = x + box_w
+            draw.line((ax, y + box_h // 2, ax + gap_x, y + box_h // 2), fill=colors["line"], width=4)
+            draw.polygon([(ax + gap_x, y + box_h // 2), (ax + gap_x - 10, y + box_h // 2 - 6), (ax + gap_x - 10, y + box_h // 2 + 6)], fill=colors["line"])
+        elif row == 0:
+            wrap_y = y + box_h
+            draw.line((x + box_w, y + box_h // 2, x + box_w + gap_x // 2, y + box_h // 2), fill=colors["line"], width=4)
+            draw.line((x + box_w + gap_x // 2, y + box_h // 2, x + box_w + gap_x // 2, wrap_y + gap_y // 2), fill=colors["line"], width=4)
+            draw.line((x + box_w + gap_x // 2, wrap_y + gap_y // 2, start_x, wrap_y + gap_y // 2), fill=colors["line"], width=4)
+            draw.line((start_x, wrap_y + gap_y // 2, start_x, wrap_y + gap_y), fill=colors["line"], width=4)
+            draw.polygon(
+                [(start_x, wrap_y + gap_y), (start_x - 8, wrap_y + gap_y - 10), (start_x + 8, wrap_y + gap_y - 10)],
+                fill=colors["line"],
+            )
+    draw.text((60, 600), "Memory and metrics read/write around every stage (Sec 4.2/4.3); a wake-word interrupt during dispatch/response/TTS cancels that stage (runtime_coordinator.py).", fill=colors["muted"], font=small_font)
+    draw.text((60, 640), "Latency tiering: parser/code-switch/semantic tiers resolve in low single-digit milliseconds; only unresolved turns reach the LLM tier.", fill=colors["muted"], font=small_font)
+    image.save(path, quality=95)
+    return path
+
+
+def add_routing_cascade_diagram() -> Path:
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = FIGURE_DIR / "figure_3_3_1_routing_cascade.png"
+    width, height = 1200, 1360
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 46)
+        font = ImageFont.truetype("arial.ttf", 25)
+        small_font = ImageFont.truetype("arial.ttf", 20)
+    except OSError:
+        title_font = font = small_font = ImageFont.load_default()
+    colors = {
+        "ink": "#1a2230", "muted": "#5b6675", "line": "#dde3ec",
+        "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
+        "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
+    }
+    draw.text((50, 35), "Figure 3.3 - Routing cascade", fill=colors["ink"], font=title_font)
+    draw.text((50, 92), "Earliest tier that resolves the command wins; each tier hands off on a miss.", fill=colors["muted"], font=small_font)
+    tiers = [
+        ("1. Parser fast-path", "regex/keyword, ~0 ms", colors["blue"]),
+        ("2. Code-switch router", "verb+entity map, ~2 ms", colors["blue"]),
+        ("3. Semantic router", "MiniLM top-k + margin, ~10 ms", colors["purple"]),
+        ("4. Keyword/fuzzy NLP", "rapidfuzz over noisy STT", colors["purple"]),
+        ("5. Tool-calling LLM", "Ollama/Claude structured tools", colors["amber"]),
+        ("6. Structured LLM NLU", "schema JSON, verifier-gated, opt-in", colors["amber"]),
+        ("7. General LLM chat", "no command resolved", colors["grey"]),
+    ]
+    x = 90
+    y = 160
+    box_w, box_h, gap = 1020, 130, 26
+    for i, (title, subtitle, color) in enumerate(tiers):
+        draw.rounded_rectangle((x, y, x + box_w, y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, y, x + 12, y + box_h), fill=color)
+        draw.text((x + 28, y + 24), title, fill=colors["ink"], font=font)
+        draw.text((x + 28, y + 70), subtitle, fill=colors["muted"], font=small_font)
+        if i < len(tiers) - 1:
+            draw.line((x + box_w // 2, y + box_h, x + box_w // 2, y + box_h + gap), fill=colors["line"], width=4)
+            draw.polygon(
+                [(x + box_w // 2, y + box_h + gap), (x + box_w // 2 - 8, y + box_h + gap - 10), (x + box_w // 2 + 8, y + box_h + gap - 10)],
+                fill=colors["line"],
+            )
+        y += box_h + gap
+    draw.text((90, y + 30), "route_verifier.py gates every tier's candidate before dispatch: schema/slots, question guard, risk tier, and policy.", fill=colors["muted"], font=small_font)
+    image.save(path, quality=95)
+    return path
+
+
+def add_memory_scheme_diagram() -> Path:
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = FIGURE_DIR / "figure_3_4_1_memory_scheme.png"
+    width, height = 1000, 1000
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 44)
+        font = ImageFont.truetype("arial.ttf", 24)
+        small_font = ImageFont.truetype("arial.ttf", 19)
+    except OSError:
+        title_font = font = small_font = ImageFont.load_default()
+    colors = {
+        "ink": "#1a2230", "muted": "#5b6675", "line": "#dde3ec",
+        "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
+        "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
+    }
+    draw.text((45, 30), "Figure 3.4 - Memory scheme", fill=colors["ink"], font=title_font)
+    draw.text((45, 82), "Fast RAM context vs richer LLM context, both backed by data/memory/.", fill=colors["muted"], font=small_font)
+    nodes = [
+        ("session_memory.py", "turns, slots, preferences API", colors["blue"], 60, 190),
+        ("memory_manager.py", "fast vs LLM context split", colors["purple"], 60, 380),
+        ("Fast context", "RAM slots, no I/O on hot path", colors["green"], 520, 300),
+        ("LLM context", "recent turns + bounded vector recall", colors["amber"], 520, 460),
+        ("memory_store.py", "SQLite + vector adapters", colors["grey"], 60, 570),
+        ("data/memory/*.db", "persisted turns/slots (Sec 4.3)", colors["green"], 520, 620),
+        ("data/vectors/ (ChromaDB)", "async semantic recall", colors["amber"], 520, 760),
+    ]
+    for title, subtitle, color, x, y in nodes:
+        draw.rounded_rectangle((x, y, x + 420, y + 130), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, y, x + 12, y + 130), fill=color)
+        draw.text((x + 26, y + 26), title, fill=colors["ink"], font=font)
+        draw.text((x + 26, y + 72), subtitle, fill=colors["muted"], font=small_font)
+    for start, end in [((480, 250), (520, 340)), ((480, 445), (520, 500)), ((480, 635), (520, 660)), ((480, 640), (520, 800)), ((270, 320), (270, 380))]:
+        draw.line((*start, *end), fill=colors["line"], width=4)
+        ex, ey = end
+        draw.polygon([(ex, ey), (ex - 10, ey - 6), (ex - 10, ey + 6)], fill=colors["line"])
+    draw.text((45, 920), "LLM context write path is asynchronous so vector recall never blocks the fast conversational path.", fill=colors["muted"], font=small_font)
+    image.save(path, quality=95)
+    return path
+
+
+def add_hardware_tier_diagram() -> Path:
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = FIGURE_DIR / "figure_3_5_1_hardware_tier_selection.png"
+    width, height = 1150, 1030
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 42)
+        font = ImageFont.truetype("arial.ttf", 24)
+        small_font = ImageFont.truetype("arial.ttf", 19)
+    except OSError:
+        title_font = font = small_font = ImageFont.load_default()
+    colors = {
+        "ink": "#1a2230", "muted": "#5b6675", "line": "#dde3ec",
+        "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
+        "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
+    }
+    draw.text((40, 30), "Figure 3.5 - Hardware-tier selection", fill=colors["ink"], font=title_font)
+    draw.text((40, 82), "core/hardware_detect.py picks the largest Qwen3 model that fits detected RAM/GPU.", fill=colors["muted"], font=small_font)
+    rows = [
+        ("16 GB+, GPU", "high -> qwen3:8b", "num_ctx 8192", colors["green"]),
+        ("12 GB+, any", "medium -> qwen3:4b", "num_ctx 4096", colors["blue"]),
+        ("8 GB, GPU", "medium -> qwen3:4b", "num_ctx 4096", colors["blue"]),
+        ("8 GB, no GPU", "low -> qwen3:1.7b", "num_ctx 2048", colors["amber"]),
+        ("< 8 GB, any", "minimal -> qwen3:0.6b", "num_ctx 1024", colors["grey"]),
+    ]
+    y = 170
+    for label, tier, ctx, color in rows:
+        draw.rounded_rectangle((40, y, 1110, y + 130), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((40, y, 52, y + 130), fill=color)
+        draw.text((75, y + 20), label, fill=colors["ink"], font=font)
+        draw.text((75, y + 58), tier, fill=colors["ink"], font=font)
+        draw.text((75, y + 96), ctx, fill=colors["muted"], font=small_font)
+        y += 150
+    draw.text((40, 930), "Missing models are auto-pulled via Ollama on first run.", fill=colors["muted"], font=small_font)
+    draw.text((40, 960), "Override with JARVIS_LLM_MODEL or disable via JARVIS_LLM_AUTO_SELECT.", fill=colors["muted"], font=small_font)
+    image.save(path, quality=95)
+    return path
+
+
+def add_phase12_c1_content(document: Document) -> None:
+    document.add_heading("1.1 Background", level=2)
+    document.add_paragraph(
+        "Jarvis is a local-first Windows voice assistant that pairs a wake-word-triggered voice pipeline with an "
+        "intent-routing cascade and a locally hosted LLM (Ollama, Qwen3 family), falling back to general conversation "
+        "only when no faster tier resolves the command. It targets any Windows 10/11 PC with 8GB+ RAM and no GPU "
+        "requirement, and treats Egyptian Arabic and English as equally first-class from wake word through STT, "
+        "routing, and TTS, including code-switched utterances within a single sentence."
+    )
+    diagram = add_conceptual_overview_diagram()
+    add_diagram_image(document, diagram, "Figure 1.1: Conceptual turn cycle - wake, record, STT, understand, act/answer, speak.")
+
+    document.add_heading("1.2 Problem Statement", level=2)
+    document.add_paragraph(
+        "Commercial voice assistants are cloud-dependent, English-first, and treat code-switched Arabic/English speech "
+        "as an edge case rather than the normal case for a bilingual Egyptian user. They also generally cannot verify "
+        "that a spoken command actually changed the state of the operating system before reporting success, and they "
+        "offer no local-only operating mode that keeps conversation and OS-control data on the user's own machine. "
+        "Jarvis addresses this by running the full pipeline locally (STT, LLM, TTS all have local fallbacks), verifying "
+        "OS side effects after execution rather than assuming API calls succeeded, and routing mixed-language input "
+        "through a cascade tuned for Egyptian Arabic/English code-switching rather than a single-language grammar."
+    )
+
+    document.add_heading("1.3 Objectives", level=2)
+    add_styled_table(
+        document,
+        ["ID", "Objective", "How it is measured in this book"],
+        [
+            ("O1", "Accurate bilingual understanding of Egyptian Arabic and English, including code-switching.", "Sec 4.6 nlp/ margin/fuzzy behavior tables; Sec 4.12 code-switch and semantic-margin test suites."),
+            ("O2", "Low-latency response for the common case, reserving the LLM for what earlier tiers cannot resolve.", "Sec 3.4 routing cascade tiers; Sec 4.2 command_router cascade; Sec 4.12 latency-oriented tests."),
+            ("O3", "Reliable hands-free activation without false wakes or missed wakes.", "Sec 4.4 wake decision algorithm; Sec 4.5 wake-word dataset class balance and feature evidence."),
+            ("O4", "Verified control of the Windows OS rather than fire-and-forget API calls.", "Sec 4.8 os_control verify-after-execute contract and behavior table."),
+            ("O5", "Safety-by-risk-tier for destructive or sensitive actions.", "Sec 4.8 policy/risk_policy, confirmation/second_factor PIN flow; Sec 4.12 routing-safety tests."),
+            ("O6", "Continuity and personalization across sessions via durable memory.", "Sec 4.2 session/memory manager; Sec 4.3 persisted data/memory/ artifacts and schema."),
+        ],
+    )
+    add_caption(document, "Table 1.1: Project objectives O1-O6 and where this book substantiates each one.")
+
+    document.add_heading("1.4 Scope", level=2)
+    document.add_paragraph(
+        "In scope: wake-word detection and adaptive retraining, hybrid cloud/local STT and TTS, the multi-tier intent "
+        "routing cascade, verified Windows OS control, local LLM chat/tool-calling, durable SQLite/vector memory, an "
+        "optional desktop UI bridge, and the automated test/eval suite documented in Chapter 4. Out of scope: a mobile "
+        "or cross-platform client, cloud-hosted multi-user deployment, and any UI surface required for the engine to "
+        "function, since the engine is designed to run headless."
+    )
+
+    document.add_heading("1.5 Motivation", level=2)
+    document.add_paragraph(
+        "The motivating use case is a single Windows user who speaks a natural mix of Egyptian Arabic and English in "
+        "the same sentence - e.g. asking to \"open Chrome\" or \"شغّل Spotify\" - and expects the assistant to "
+        "understand both without switching modes. Sections 4.6 and 4.4 show this is treated as the default input shape "
+        "throughout the pipeline (STT language lock plus code-switch acceptance, a dedicated code-switch router tier, "
+        "and bilingual TTS voice profiles) rather than bolted on as a translation layer."
+    )
+
+    document.add_heading("1.6 Report Organization", level=2)
+    add_styled_table(
+        document,
+        ["Chapter", "Content"],
+        [
+            ("1", "Introduction: background, problem statement, objectives, scope, motivation."),
+            ("2", "Literature Review: prior art in commercial assistants, local LLM runtimes, STT, wake word, VAD, TTS, semantic routing and memory."),
+            ("3", "Methodology: design principles and the five whole-system diagrams (architecture, pipeline, routing, memory, hardware tiers)."),
+            ("4", "Implementation: one section per top-level folder (4.1 root through 4.14 models/), built folder-by-folder from the real source and data."),
+            ("5", "Conclusion & Future Work: objectives achieved, limitations, and next steps."),
+        ],
+    )
+    add_caption(document, "Table 1.2: Reading guide for this document.")
+
+
+def add_phase12_c2_content(document: Document) -> None:
+    document.add_heading("2.1 Commercial Voice Assistants", level=2)
+    document.add_paragraph(
+        "Cloud assistants such as Siri, Google Assistant, and Alexa are optimized for broad single-language coverage "
+        "and cloud-side processing; mixed-language utterances are typically handled by locale switching rather than "
+        "per-utterance code-switch tolerance. Jarvis instead runs primarily on-device and treats Egyptian Arabic/English "
+        "code-switching as a first-class input shape (Sec 4.6), and does not require a persistent cloud connection for "
+        "its core loop (Sec 4.4, 4.7)."
+    )
+
+    document.add_heading("2.2 Local LLM Runtimes", level=2)
+    document.add_paragraph(
+        "Ollama serves as the local model runtime, hosting Qwen3-family models chosen automatically by "
+        "core/hardware_detect.py (Sec 3.6, Sec 4.7). Running the assistant tier locally avoids per-request cloud "
+        "latency and keeps conversation content on the user's machine; the optional Claude API path in "
+        "llm/tool_caller.py is documented as an alternate backend rather than the primary one (Sec 4.7)."
+    )
+
+    document.add_heading("2.3 Speech-to-Text: Faster-Whisper and ElevenLabs", level=2)
+    document.add_paragraph(
+        "Faster-Whisper provides a local, hardware-sized STT fallback (model tier chosen by "
+        "recommend_whisper_runtime(), Sec 3.6), while ElevenLabs provides higher cloud-quality transcription when an "
+        "API key is configured. The key finding carried through Sec 4.4 is the per-utterance language lock: rather than "
+        "decoding with language=None and letting the model guess, Jarvis fixes the primary language per utterance while "
+        "still accepting code-switched words in the other script, and applies a confidence floor plus a hallucination "
+        "guard (log-probability and compression ratio) to reject noise instead of passing along fabricated text."
+    )
+
+    document.add_heading("2.4 Wake-Word Detection and Dataset Practice", level=2)
+    document.add_paragraph(
+        "openWakeWord provides the ONNX runtime convention that audio/wake_word.py builds on: a single unified model "
+        "detecting both \"Jarvis\" and \"جارفيس\" rather than per-language variants, decided via an "
+        "EMA-smoothed score plus a raw peak threshold and confirm-frame debounce (Sec 4.4). Sec 4.5 documents the "
+        "supporting dataset practice: class-balanced positive/negative WAV splits and precomputed fixed-shape feature "
+        "tensors (41x96 float32), with negative examples deliberately outnumbering positive ones to bias toward "
+        "false-wake resistance."
+    )
+
+    document.add_heading("2.5 Voice Activity Detection: Silero", level=2)
+    document.add_paragraph(
+        "Silero VAD (ONNX) provides the primary speech/non-speech gate for recording, with an energy-based fallback "
+        "when the ONNX model is unavailable (Sec 4.4). This two-tier VAD design mirrors the wake-word module's own "
+        "primary/fallback pattern, keeping the pipeline usable in degraded environments."
+    )
+
+    document.add_heading("2.6 Text-to-Speech: edge-tts and ElevenLabs", level=2)
+    document.add_paragraph(
+        "edge-tts supplies a free, no-API-key baseline voice for both languages (ar-EG-SalmaNeural, en-US-AriaNeural); "
+        "ElevenLabs is used when configured for higher-quality synthesis. audio/tts.py streams sentence-by-sentence so "
+        "playback starts before the full response is generated, and a deterministic (non-LLM) voice normalizer "
+        "converts numbers, dates, and place names to spoken form before either backend receives the text (Sec 4.4)."
+    )
+
+    document.add_heading("2.7 Semantic Routing and Memory", level=2)
+    document.add_paragraph(
+        "sentence-transformers (multilingual MiniLM) backs the semantic router's top-k plus margin acceptance rule "
+        "(Sec 4.6, Sec 3.4), letting paraphrased commands resolve without an LLM call. ChromaDB backs the optional "
+        "vector-memory recall path documented in Sec 4.3 and Sec 3.5, providing bounded semantic recall for the LLM "
+        "context without blocking the fast conversational path."
+    )
+
+    document.add_heading("2.8 Positioning", level=2)
+    document.add_paragraph(
+        "Jarvis's contribution is not any single component in isolation - openWakeWord, Faster-Whisper, Ollama, and "
+        "sentence-transformers are all existing open-source building blocks - but their integration into a cascade "
+        "that is bilingual by default, verifies OS side effects rather than assuming them, and degrades gracefully "
+        "component-by-component (Sec 4.4, 4.6, 4.8) instead of failing the whole turn when one optional dependency is "
+        "missing."
+    )
+
+
+def add_phase12_c3_content(document: Document) -> None:
+    document.add_heading("3.1 Design Principles", level=2)
+    add_styled_table(
+        document,
+        ["Principle", "What it means in this codebase"],
+        [
+            ("Latency tiering", "Cheaper, earlier routing tiers (parser, code-switch, semantic) are tried before the LLM tier, so most turns never pay LLM latency (Sec 3.4, Sec 4.2)."),
+            ("One LLM call per turn", "llm/prompt_builder.py assembles persona, language, memory, and KB context into a single prompt package rather than chaining multiple model calls (Sec 4.7)."),
+            ("Verify before claiming", "os_control/ adapters read back real OS state after acting and only report success if it verifiably changed (Sec 4.8)."),
+            ("Graceful degradation", "Optional dependencies (Silero, ElevenLabs, sentence-transformers, WinRT, pywin32) each have a documented fallback path rather than a hard failure (Sec 4.4, 4.6, 4.8)."),
+            ("Safety by risk tier", "Destructive or sensitive actions route through policy/risk_policy and a spoken-PIN second factor before execution (Sec 4.8)."),
+        ],
+    )
+    add_caption(document, "Table 3.1: Design principles evidenced across the implementation chapters.")
+
+    document.add_heading("3.2 Architecture", level=2)
+    document.add_paragraph(
+        "Jarvis is organized into five horizontal layers plus a persisted data layer that backs all of them: an I/O "
+        "layer (audio/) at the boundary with the user, an understanding layer (nlp/) that turns transcripts into "
+        "candidate intents, a control plane (core/) that owns routing, verification, memory, and persona, an "
+        "action/answer layer (os_control/, tools/, llm/) that performs verified side effects or generates language, and "
+        "an optional presentation layer (ui/, desktop/) that never gates core functionality."
+    )
+    diagram = add_layered_architecture_diagram()
+    add_diagram_image(document, diagram, "Figure 3.1: Layered architecture from I/O through the optional presentation layer.")
+
+    document.add_heading("3.3 Runtime Pipeline", level=2)
+    document.add_paragraph(
+        "Within orchestrator.run(), a single turn flows wake -> record -> STT -> route -> verify -> dispatch -> shape "
+        "-> speak. Each stage is documented in its owning folder chapter; this figure shows how those chapters compose "
+        "into one pass, with the wake-word interrupt gate (runtime_coordinator.py) able to cancel dispatch, response "
+        "shaping, or TTS mid-stream (Sec 4.2, 4.4, 4.7)."
+    )
+    diagram = add_runtime_pipeline_diagram()
+    add_diagram_image(document, diagram, "Figure 3.2: Runtime pipeline for a single turn, stage by stage.")
+
+    document.add_heading("3.4 Routing Cascade", level=2)
+    document.add_paragraph(
+        "command_router.py tries seven tiers in order and dispatches on the first one that resolves the command: a "
+        "regex/keyword parser fast-path, a code-switch shortcut router, a semantic router, keyword/fuzzy matching, a "
+        "tool-calling LLM tier, an opt-in structured-LLM NLU fallback gated behind route_verifier.py, and finally "
+        "general LLM chat for anything that is not a command. The semantic tier's margin-acceptance rule requires the "
+        "best candidate to clear an absolute confidence floor (best >= sigma) and to lead the runner-up by a minimum "
+        "gap (best - second >= delta); failing either check defers to a later tier instead of guessing on a near-tie "
+        "(Sec 4.6)."
+    )
+    diagram = add_routing_cascade_diagram()
+    add_diagram_image(document, diagram, "Figure 3.3: Routing cascade tiers, earliest resolving tier wins.")
+
+    document.add_heading("3.5 Memory Scheme", level=2)
+    document.add_paragraph(
+        "session_memory.py exposes two context shapes to the rest of the system: a fast, RAM-only context (recent "
+        "slots and references, no I/O on the hot path) and a richer LLM context (recent turns plus bounded vector "
+        "recall) assembled by memory_manager.py. Both are backed by the persisted store documented in Sec 4.3: a "
+        "SQLite database (turns and slots tables, WAL journaling) is the primary store, while data/vectors/ (ChromaDB "
+        "with all-MiniLM-L6-v2 embeddings) supplies semantic recall asynchronously so it never blocks the fast path."
+    )
+    diagram = add_memory_scheme_diagram()
+    add_diagram_image(document, diagram, "Figure 3.4: Memory scheme - fast RAM context and LLM context over the same persisted store.")
+
+    document.add_heading("3.6 Models", level=2)
+    add_styled_table(
+        document,
+        ["Model", "Role", "Source"],
+        [
+            ("Qwen3 family (0.6b/1.7b/4b/8b)", "Local chat/tool-calling LLM tier, selected by hardware tier.", "Ollama, auto-pulled on first run."),
+            ("Unified wake-word ONNX (jarvis_unified.onnx)", "Bilingual EN/EGY wake detection, one model for both trigger phrases.", "Trained via scripts/train_arabic_wake_model.py over data in Sec 4.5; loaded in Sec 4.4."),
+            ("Faster-Whisper (base/small/medium)", "Local STT fallback, sized by VRAM/RAM via recommend_whisper_runtime().", "faster-whisper package."),
+            ("Silero VAD (ONNX)", "Primary speech/non-speech gate, with energy-based fallback.", "onnxruntime model asset."),
+            ("all-MiniLM-L6-v2 / multilingual MiniLM", "Sentence embeddings for semantic routing and vector memory recall.", "sentence-transformers."),
+            ("edge-tts / ElevenLabs voices", "Bilingual TTS voice profiles (ar-EG-SalmaNeural, en-US-AriaNeural, or cloud voices).", "edge-tts package / ElevenLabs API."),
+        ],
+    )
+    add_caption(document, "Table 3.2: Models used across the pipeline and where each is loaded.")
+    diagram = add_hardware_tier_diagram()
+    add_diagram_image(document, diagram, "Figure 3.5: Hardware-tier selection for the local LLM model.")
+    add_styled_table(
+        document,
+        ["RAM", "GPU", "Tier", "Model", "num_ctx", "lightweight_ctx"],
+        [
+            ("16 GB+", "Yes", "high", "qwen3:8b", "8192", "4096"),
+            ("12 GB+", "Any", "medium", "qwen3:4b", "4096", "2048"),
+            ("8 GB", "Yes", "medium", "qwen3:4b", "4096", "2048"),
+            ("8 GB", "No", "low", "qwen3:1.7b", "2048", "1024"),
+            ("< 8 GB", "Any", "minimal", "qwen3:0.6b", "1024", "512"),
+        ],
+    )
+    add_caption(document, "Table 3.3: core/hardware_detect.py model tiers, copied from _MODEL_TIERS.")
+
+    document.add_heading("3.7 Dependencies", level=2)
+    add_styled_table(
+        document,
+        ["Tier", "Representative packages", "Role"],
+        [
+            ("Tier 1: Voice pipeline (core)", "python-dotenv, numpy, sounddevice, onnxruntime, faster-whisper, openwakeword, edge-tts, soundfile", "Wake word, capture, STT, TTS - required to run at all."),
+            ("Tier 2: Orchestration (core)", "httpx, psutil, rapidfuzz", "Ollama/HTTP client, hardware detection, fuzzy intent matching."),
+            ("Tier 3: Optional LLM backends", "anthropic", "Optional Claude API backend; Ollama remains primary."),
+            ("Tier 4: Intelligent features", "chromadb, sentence-transformers, duckduckgo-search, ddgs", "Semantic routing, vector memory, live web search; degrade gracefully if absent."),
+            ("Tier 5: OS integration (Windows)", "comtypes, pycaw, wmi, winsdk, screen-brightness-control, pyperclip, watchdog, pywin32, elevenlabs, pystray, Pillow", "Volume/brightness/radio control, clipboard, Outlook, tray icon."),
+            ("Tier 6: Desktop UI bridge (optional)", "fastapi, uvicorn[standard]", "WebSocket bridge to the desktop app; engine runs without it."),
+            ("Training only (requirements-training.txt)", "scipy, torch", "Wake-word model retraining (scripts/train_arabic_wake_model.py), not needed to run Jarvis."),
+        ],
+    )
+    add_caption(document, "Table 3.4: Dependency tiers, copied from requirements.txt/requirements-training.txt.")
+
+    document.add_heading("3.8 Key Algorithms Overview", level=2)
+    add_styled_table(
+        document,
+        ["Algorithm", "Where documented", "One-line summary"],
+        [
+            ("Wake decision", "Sec 4.4", "EMA-smoothed score plus raw peak threshold, confirm-frame debounce, and cooldown before triggering."),
+            ("Per-utterance language lock", "Sec 4.4", "STT fixes the primary language per utterance instead of decoding with language=None, while still accepting code-switched words."),
+            ("Semantic margin routing", "Sec 4.6, Sec 3.4", "Accept only if best score clears an absolute floor and leads the runner-up by a minimum margin; otherwise defer to the next tier."),
+            ("Route verifier decision", "Sec 4.2", "Converts a routed candidate into execute / clarify / confirm / llm based on schema completeness, question-shape guard, and risk tier."),
+            ("Verify-after-execute", "Sec 4.8", "Every OS-control adapter re-reads real state after acting and only reports success if the state verifiably changed."),
+            ("Wake-word feature/training/eval pipeline", "Sec 4.5", "Fixed-shape (41x96) feature tensors from class-balanced WAV splits feed model training; evaluation happens offline before a model ships."),
+        ],
+    )
+    add_caption(document, "Table 3.5: Key algorithms and their detailed treatment elsewhere in this book.")
+
+
+def fill_phase12(doc_path: Path = DOC_PATH) -> Path:
+    if not doc_path.exists():
+        raise FileNotFoundError(f"Missing {doc_path}; run --phase 0 first.")
+    insert_generated_content(doc_path, "c1", add_phase12_c1_content)
+    insert_generated_content(doc_path, "c2", add_phase12_c2_content)
+    insert_generated_content(doc_path, "c3", add_phase12_c3_content)
+    return doc_path
+
+
+def remove_orphaned_c4_utils_section(doc_path: Path = DOC_PATH) -> None:
+    """Delete the leftover Phase-9-scaffold heading/placeholder.
+
+    utils/ content was written into the real "4.10 utils/" section under the
+    c4-tools placeholder; the separate c4-utils placeholder from the Phase 0
+    skeleton was never filled and its heading is orphaned. Remove both the
+    stray heading and the placeholder paragraph so no empty section remains.
+    """
+    document = Document(str(doc_path))
+    paras = document.paragraphs
+    target_index = None
+    for i, p in enumerate(paras):
+        if p.text.strip() == "4.10 utils/ cross-reference placeholder":
+            target_index = i
+            break
+    if target_index is None:
+        return
+    to_remove = [paras[target_index]]
+    if target_index + 1 < len(paras) and "[[FILL:c4-utils]]" in paras[target_index + 1].text:
+        to_remove.append(paras[target_index + 1])
+    for paragraph in to_remove:
+        delete_paragraph(paragraph)
+    document.save(str(doc_path))
+
+
+def add_phase13_title_content(document: Document) -> None:
+    document.add_paragraph("Jarvis", style="Title")
+    document.add_paragraph("A Local-First Bilingual (English / Egyptian Arabic) Windows Voice Assistant")
+    document.add_paragraph("Project Documentation Book - prepared for the Final Discussion")
+    document.add_paragraph(
+        "Wake word -> streaming capture + STT -> intent routing cascade -> verified action / local LLM -> streamed TTS"
+    )
+    document.add_paragraph("Generated from the Jarvis repository source and runtime data, folder-by-folder.")
+    document.add_paragraph("")
+    document.add_paragraph("Prepared by: Abdelrhman Yousef Mahrous")
+    document.add_paragraph("Supervised by: Dr. Ibrahim Mubarak")
+    document.add_paragraph("2026")
+
+
+def add_phase13_ack_content(document: Document) -> None:
+    document.add_paragraph(
+        "This project builds on a stack of open-source and hosted components documented throughout Chapter 4: "
+        "openWakeWord and Silero for on-device audio detection, Faster-Whisper and ElevenLabs for bilingual speech "
+        "recognition, Ollama and the Qwen3 model family for local language understanding and generation, edge-tts "
+        "for free-tier speech synthesis, sentence-transformers and ChromaDB for semantic routing and memory recall, "
+        "and Open-Meteo/DuckDuckGo for live data. Their availability as free or self-hostable tools is what makes a "
+        "fully local-first bilingual assistant practical on ordinary consumer hardware."
+    )
+    document.add_paragraph(
+        "Equal acknowledgment goes to the Egyptian Arabic / English bilingual user experience that motivated this "
+        "project: treating code-switched speech as the normal case, not an edge case, shaped nearly every design "
+        "decision documented in this book, from the unified wake-word model in Sec 4.4 to the code-switch router in "
+        "Sec 4.6."
+    )
+
+
+def add_phase13_abstract_content(document: Document) -> None:
+    document.add_paragraph(
+        "Jarvis is a local-first Windows voice assistant built for a bilingual Egyptian Arabic / English user. A "
+        "single unified wake-word model detects both \"Jarvis\" and \"جارفيس\"; a hybrid cloud/local speech-to-text "
+        "path locks the primary language per utterance while still accepting code-switched words; a seven-tier "
+        "routing cascade resolves most commands in low single-digit milliseconds and reserves a locally hosted Qwen3 "
+        "language model (selected automatically for the detected hardware) for anything the faster tiers cannot "
+        "resolve; every operating-system side effect is verified by re-reading real OS state rather than assumed from "
+        "an API call's return value; and durable SQLite plus vector memory give the assistant continuity across "
+        "sessions. This book documents that system for a final defense: Chapter 1 states the problem and objectives, "
+        "Chapter 2 reviews the prior art each component builds on, Chapter 3 lays out the whole-system methodology and "
+        "diagrams, Chapter 4 documents every top-level folder of the implementation against the real source and data "
+        "on disk, and Chapter 5 closes with an honest accounting of what is achieved and what remains as future work."
+    )
+    document.add_heading("Reading Guide", level=3)
+    document.add_paragraph(
+        "Readers preparing for the defense should read Chapters 1 and 3 first for the whole-system picture, then use "
+        "Chapter 4 as a reference: each subsection (4.1 through 4.14) is self-contained, maps to exactly one "
+        "repository folder, and can be read in isolation without the others."
+    )
+
+
+def add_phase13_abbr_content(document: Document) -> None:
+    add_styled_table(
+        document,
+        ["Abbreviation", "Meaning"],
+        [
+            ("ASR / STT", "Automatic Speech Recognition / Speech-to-Text."),
+            ("TTS", "Text-to-Speech."),
+            ("VAD", "Voice Activity Detection."),
+            ("NLU", "Natural Language Understanding."),
+            ("LLM", "Large Language Model."),
+            ("ONNX", "Open Neural Network Exchange, the runtime model format used for wake-word and VAD models."),
+            ("WAL", "Write-Ahead Logging, the SQLite journal mode used by the memory store."),
+            ("KB", "Knowledge Base (offline retrieval index)."),
+            ("PIN", "Personal Identification Number, used as the spoken second factor for sensitive actions."),
+            ("EGY", "Egyptian Arabic."),
+            ("WinRT", "Windows Runtime API, used for no-admin Wi-Fi/Bluetooth/Airplane-mode control."),
+            ("FAR / FRR", "False-Accept Rate / False-Reject Rate, wake-word evaluation metrics."),
+            ("p50 / p95", "50th / 95th percentile latency."),
+            ("EMA", "Exponential Moving Average, used to smooth the wake-word detection score."),
+            ("RAM", "Random-Access Memory, used for hardware-tier model selection."),
+            ("GPU", "Graphics Processing Unit."),
+        ],
+    )
+
+
+def _collect_headings_for_contents(document: Document) -> list[tuple[int, str]]:
+    """Collect Heading 1/2 text for the static contents list.
+
+    Heading 3 is intentionally excluded: it is the per-folder chapter
+    template's subsection name (Purpose, File Inventory, Algorithms, ...)
+    repeated across all eleven Chapter 4 subsections, so listing it would
+    add ~90 near-duplicate, non-navigational entries instead of a usable TOC.
+    """
+    entries = []
+    for paragraph in document.paragraphs:
+        style = paragraph.style.name
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        if style == "Heading 2" and text == "Document Build Note":
+            continue
+        if style == "Heading 1":
+            entries.append((0, text))
+        elif style == "Heading 2" and text not in FRONT_MATTER_TITLES:
+            entries.append((1, text))
+    return entries
+
+
+def add_contents_static_list(document: Document) -> None:
+    document.add_paragraph(
+        "Static contents list (regenerate the live Table of Contents field in Word/LibreOffice with References -> "
+        "Update Table for page numbers):",
+        style="Caption",
+    )
+    source = Document(str(DOC_PATH))
+    for depth, text in _collect_headings_for_contents(source):
+        paragraph = document.add_paragraph(text)
+        paragraph.paragraph_format.left_indent = Inches(0.25 * depth)
+        if depth == 0:
+            paragraph.runs[0].bold = True
+
+
+def add_figures_static_list(document: Document) -> None:
+    document.add_paragraph(
+        "Static List of Figures (regenerate the live field in Word/LibreOffice for page numbers):",
+        style="Caption",
+    )
+    source = Document(str(DOC_PATH))
+    count = 0
+    for paragraph in source.paragraphs:
+        if paragraph.style.name == "Caption" and paragraph.text.strip().startswith("Figure"):
+            document.add_paragraph(paragraph.text.strip())
+            count += 1
+    if count == 0:
+        document.add_paragraph("No figures were found in the document at generation time.")
+
+
+def add_tables_static_list(document: Document) -> None:
+    document.add_paragraph(
+        "Static List of Tables (regenerate the live field in Word/LibreOffice for page numbers):",
+        style="Caption",
+    )
+    source = Document(str(DOC_PATH))
+    count = 0
+    for paragraph in source.paragraphs:
+        if paragraph.style.name == "Caption" and paragraph.text.strip().startswith("Table"):
+            document.add_paragraph(paragraph.text.strip())
+            count += 1
+    if count == 0:
+        document.add_paragraph("No tables were found in the document at generation time.")
+
+
+def add_phase13_c5_content(document: Document) -> None:
+    document.add_heading("5.1 Objectives Achieved", level=2)
+    add_styled_table(
+        document,
+        ["ID", "Objective", "Evidence in this book"],
+        [
+            ("O1", "Bilingual EGY/English understanding, including code-switching.", "Sec 4.6 code-switch router, semantic margin rule, and fuzzy/keyword fallback; Sec 4.4 STT language lock with code-switch acceptance; Sec 4.12 code-switch and semantic-margin test suites."),
+            ("O2", "Low-latency response, reserving the LLM tier for what earlier tiers cannot resolve.", "Sec 3.4 seven-tier cascade; Sec 4.2 command_router implementation; parser/code-switch/semantic tiers resolve without any LLM call."),
+            ("O3", "Reliable hands-free wake activation.", "Sec 4.4 EMA/peak/confirm-frame wake decision; Sec 4.5 class-balanced dataset (negatives outnumber positives) biasing toward false-wake resistance."),
+            ("O4", "Verified control of the Windows OS.", "Sec 4.8 verify-after-execute contract implemented across native_ops, radio_ops, and windows_toggles, each re-reading real state after acting."),
+            ("O5", "Safety-by-risk-tier for destructive/sensitive actions.", "Sec 4.8 policy/risk_policy tiers and the spoken-PIN second-factor confirmation flow; Sec 4.12 routing-safety tests asserting zero unsafe auto-executions."),
+            ("O6", "Continuity/personalization via durable memory.", "Sec 4.2 session/memory manager fast-vs-LLM context split; Sec 4.3 persisted SQLite turns/slots schema and vector-memory recall path."),
+        ],
+    )
+    add_caption(document, "Table 5.1: Objectives O1-O6 against the evidence documented in Chapter 4.")
+    document.add_paragraph(
+        "Across the eleven implementation chapters (Sec 4.1-4.14), every objective stated in Chapter 1 is backed by "
+        "real, inspected source code or on-disk data rather than by design intent alone: file inventories were "
+        "cross-checked against the actual folders, and data-chapter claims (Sec 4.3, 4.5, 4.12, 4.14) were verified "
+        "against live SQLite queries, NumPy tensor shapes, and JSONL fixture counts rather than estimated."
+    )
+
+    document.add_heading("5.2 Limitations", level=2)
+    document.add_paragraph(
+        "Several gaps are visible directly from the implementation chapters rather than inferred. The wake-word "
+        "chapter (Sec 4.5) found no training-loop source code inside the deployed-relevant dataset folder itself, so "
+        "the exact loss function, epoch count, and threshold-selection procedure are documented only as the training "
+        "script's stated purpose and cross-referenced to scripts/train_arabic_wake_model.py rather than reproduced "
+        "step-by-step; a smaller sibling Arabic-only wake dataset was also observed but is out of scope for the "
+        "chapter, which explicitly targets the unified deployed model instead. The memory chapter (Sec 4.3) noted "
+        "that some persisted-state claims (e.g. SQLite journal_mode) reflect a point-in-time snapshot and can drift as "
+        "the store continues to be written during normal use. The desktop UI chapter (Sec 4.11) summarizes the "
+        "Tauri+React toolchain rather than exhaustively documenting every component, per the folder-by-folder scope "
+        "rule for that phase. Several optional dependencies (ElevenLabs, sentence-transformers, WinRT, pywin32) are "
+        "documented with their fallback behavior but were not exercised in a live degraded-hardware test as part of "
+        "this book."
+    )
+
+    document.add_heading("5.3 Future Work", level=2)
+    add_styled_table(
+        document,
+        ["Area", "Possible next step"],
+        [
+            ("Wake-word evaluation", "Add a dedicated held-out eval harness with reported FAR/FRR inside the training folder itself, rather than relying on the deployed model's field behavior alone (extends Sec 4.5)."),
+            ("Structured LLM NLU", "Promote the opt-in schema-constrained NLU fallback (Sec 4.7) from off-by-default to a measured, gradually-enabled path once more labeled cases are collected (Sec 4.12 fixtures)."),
+            ("Memory consolidation", "Add an explicit long-term consolidation/summarization policy for the turns table beyond the currently-observed bounded recent-turn pattern (Sec 4.3)."),
+            ("Desktop UI parity", "Extend the desktop bridge/tray coverage (Sec 4.11) so more engine event types have a first-class dashboard view."),
+            ("Cross-platform scope", "Evaluate which os_control/ adapters would need Linux/macOS equivalents if the assistant were ever ported beyond Windows (Sec 4.8)."),
+        ],
+    )
+    add_caption(document, "Table 5.2: Candidate future-work items grounded in gaps observed while documenting Chapter 4.")
+
+
+def add_phase13_refs_content(document: Document) -> None:
+    add_styled_table(
+        document,
+        ["Reference", "Role in Jarvis"],
+        [
+            ("openWakeWord", "ONNX wake-word detection convention consumed by audio/wake_word.py (Sec 4.4) and produced by the training pipeline (Sec 4.5)."),
+            ("Silero VAD", "Primary voice-activity-detection backend in audio/vad.py (Sec 4.4)."),
+            ("Faster-Whisper", "Local speech-to-text fallback in audio/stt.py, sized by core/hardware_detect.py (Sec 4.4, 3.6)."),
+            ("ElevenLabs", "Optional cloud STT/TTS backend for higher-quality bilingual audio (Sec 4.4)."),
+            ("Ollama", "Local LLM runtime serving the Qwen3 model family (Sec 4.7, 3.6)."),
+            ("Qwen3 model family", "Local chat/tool-calling models selected by hardware tier (Sec 3.6, core/hardware_detect.py)."),
+            ("edge-tts", "Free-tier text-to-speech backend, default voices ar-EG-SalmaNeural / en-US-AriaNeural (Sec 4.4)."),
+            ("sentence-transformers", "Multilingual embeddings backing the semantic router and vector memory recall (Sec 4.6, 4.3, 2.7)."),
+            ("ChromaDB", "Vector store for semantic memory recall under data/vectors/ (Sec 4.3, 3.5)."),
+            ("Open-Meteo", "No-API-key weather data source used by tools/weather.py (Sec 4.9)."),
+            ("DuckDuckGo (duckduckgo-search / ddgs)", "No-API-key web search source used by tools/web_search.py (Sec 4.9)."),
+            ("Repository source and data", "All file inventories, code excerpts, schema samples, and behavior tables in Chapter 4 are drawn directly from the Jarvis repository source and data/ contents as read at documentation time."),
+        ],
+    )
+    add_caption(document, "Table R.1: Consolidated references and their role in the system.")
+
+
+def add_phase13_appendix_content(document: Document) -> None:
+    document.add_heading("Appendix A: Source-Code Listing Reference", level=2)
+    add_styled_table(
+        document,
+        ["Area", "Folder(s)", "Documented in"],
+        [
+            ("Root package", "repository root", "Sec 4.1"),
+            ("Runtime control plane", "core/, core/handlers/", "Sec 4.2"),
+            ("Persisted memory", "data/memory/", "Sec 4.3"),
+            ("Audio I/O", "audio/", "Sec 4.4"),
+            ("Wake-word data/training", "wake word data/jarvis_unified_training/", "Sec 4.5"),
+            ("Understanding layer", "nlp/", "Sec 4.6"),
+            ("Local LLM", "llm/, llm/prompts/", "Sec 4.7"),
+            ("Windows OS control", "os_control/", "Sec 4.8"),
+            ("Live-data tools", "tools/", "Sec 4.9"),
+            ("Shared utilities", "utils/", "Sec 4.10"),
+            ("UI bridge and desktop app", "ui/, desktop/", "Sec 4.11"),
+            ("Tests, scripts, models", "tests/, scripts/, models/", "Sec 4.12-4.14"),
+        ],
+    )
+    add_caption(document, "Table A.1: Where each area of the source tree is documented in this book.")
+
+    document.add_heading("Appendix B: Configuration Reference", level=2)
+    document.add_paragraph(
+        "Every environment key referenced throughout Chapter 4 has a working default in .env.example at the "
+        "repository root (Sec 4.1). Copy it to .env and edit only the keys relevant to your setup; representative "
+        "keys are tabulated per-folder in each Configuration Surface subsection (e.g. Table 4.1.2, 4.4.2, 4.8.3)."
+    )
+
+    document.add_heading("Appendix C: Installation Guide", level=2)
+    add_styled_table(
+        document,
+        ["Step", "Command / action"],
+        [
+            ("1. Install runtime dependencies", "python -m pip install -r requirements.txt"),
+            ("2. (Optional) install training-only dependencies", "python -m pip install -r requirements-training.txt"),
+            ("3. Copy the environment template", "copy .env.example .env"),
+            ("4. Start the local LLM runtime", "ollama serve"),
+            ("5. Run the assistant", "python main.py"),
+            ("6. Verify the install", "python core/doctor.py"),
+        ],
+    )
+    add_caption(document, "Table C.1: Installation steps, copied from README.md.")
+
+    document.add_heading("Appendix D: User Manual", level=2)
+    document.add_paragraph(
+        "Say \"Jarvis\" or \"جارفيس\" to wake the assistant - both are detected by the same unified model (Sec 4.4). "
+        "Speak your command or question in English, Egyptian Arabic, or a natural mix of both (Sec 4.6). Destructive "
+        "or sensitive actions (permanent delete, rename/move, shutdown) will ask for a spoken PIN before executing "
+        "(default 1234, configurable via JARVIS_SECOND_FACTOR_PIN, Sec 4.8) - never read anything back that could be "
+        "overheard and replayed. If a control genuinely cannot be verified as changed, Jarvis reports that honestly "
+        "instead of claiming success."
+    )
+
+    document.add_heading("Appendix E: Testing Scenarios", level=2)
+    document.add_paragraph(
+        "The automated suite documented in Sec 4.12 exercises: code-switch routing across apps/volume/folders/delete "
+        "intents; LLM routing guards so advice questions do not misfire as commands; semantic near-tie deferral; "
+        "fast-context and LLM-context memory behavior; freshness-gated app/file reference resolution; pending-task "
+        "slot filling and TTL expiry; sentence-buffer boundaries for English and Arabic; TTS prosody normalization; "
+        "and voice-normalizer output for weather, units, and URLs. The labeled NLU evaluation fixture (154 cases) "
+        "backs the safety invariant that zero unsafe actions auto-execute and no question is misrouted as a command."
+    )
+
+    document.add_heading("Appendix F: Glossary", level=2)
+    document.add_paragraph(
+        "See the Abbreviations section in the front matter for acronym expansions. Domain-specific terms used "
+        "throughout Chapter 4 (margin acceptance, verify-after-execute, risk tier, fast context vs. LLM context) are "
+        "each defined at first use in their owning subsection and cross-referenced from Chapter 3."
+    )
+
+
+def fill_phase13(doc_path: Path = DOC_PATH) -> Path:
+    if not doc_path.exists():
+        raise FileNotFoundError(f"Missing {doc_path}; run --phase 0 first.")
+    remove_orphaned_c4_utils_section(doc_path)
+    insert_generated_content(doc_path, "title", add_phase13_title_content)
+    insert_generated_content(doc_path, "ack", add_phase13_ack_content)
+    insert_generated_content(doc_path, "abstract", add_phase13_abstract_content)
+    insert_generated_content(doc_path, "abbr", add_phase13_abbr_content)
+    insert_generated_content(doc_path, "c5", add_phase13_c5_content)
+    insert_generated_content(doc_path, "refs", add_phase13_refs_content)
+    insert_generated_content(doc_path, "appendix", add_phase13_appendix_content)
+    # Contents/Figures/Tables are generated last so they reflect the fully assembled document.
+    insert_generated_content(doc_path, "contents", add_contents_static_list)
+    insert_generated_content(doc_path, "figures", add_figures_static_list)
+    insert_generated_content(doc_path, "tables", add_tables_static_list)
+    return doc_path
+
+
 def add_build_note(document: Document) -> None:
     document.add_heading("Document Build Note", level=2)
     add_callout(
@@ -3236,12 +4125,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build or update the Jarvis documentation book.")
     parser.add_argument(
         "--phase",
-        choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+        choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"],
         default="0",
         help="Phase to run. Phase 0 rebuilds the skeleton; Phase 1 fills the root package section.",
     )
     args = parser.parse_args()
-    if args.phase == "11":
+    if args.phase == "13":
+        path = fill_phase13()
+        print(f"Filled Phase 13 in {path}")
+    elif args.phase == "12":
+        path = fill_phase12()
+        print(f"Filled Phase 12 in {path}")
+    elif args.phase == "11":
         path = fill_phase11()
         print(f"Filled Phase 11 in {path}")
     elif args.phase == "10":
