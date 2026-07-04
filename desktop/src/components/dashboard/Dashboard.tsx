@@ -143,7 +143,9 @@ export function Dashboard({ send }: DashboardProps) {
         >
           <div data-tauri-drag-region>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-50/70">Control Center</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-normal text-white">Jarvis Dashboard</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-normal text-white">
+              <span className="font-jarvis tracking-wide">Jarvis</span>
+            </h1>
           </div>
 
           <div className="flex flex-wrap gap-2">
