@@ -213,6 +213,7 @@ class StreamingSTT:
         on_final: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_speech_start: Optional[Callable[[], None]] = None,
         on_speech_end: Optional[Callable[[], None]] = None,
+        on_amplitude: Optional[Callable[[float], None]] = None,
     ) -> None:
         self.filename = filename
         self.max_duration = float(max_duration)
@@ -231,6 +232,7 @@ class StreamingSTT:
         self.on_final = on_final
         self.on_speech_start = on_speech_start
         self.on_speech_end = on_speech_end
+        self.on_amplitude = on_amplitude
         self._chunk_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=128)
         self._stop_event = threading.Event()
         # Arabic partial stability — emit only after 2 consecutive identical windows
@@ -370,6 +372,9 @@ class StreamingSTT:
 
                     rms = _chunk_rms(chunk)
                     is_voice = rms >= float(self.energy_threshold)
+                    # 0.2 is a heuristic display-gain, not a calibrated reference level —
+                    # typical speech RMS sits well under it, loud speech clips to 1.0.
+                    _safe_callback(self.on_amplitude, min(1.0, rms / 0.2))
 
                     if not speech_detected:
                         pre_roll.append(chunk.copy())
@@ -496,6 +501,7 @@ def record_utterance_streaming(
     on_final: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_speech_start: Optional[Callable[[], None]] = None,
     on_speech_end: Optional[Callable[[], None]] = None,
+    on_amplitude: Optional[Callable[[float], None]] = None,
 ) -> Dict[str, Any]:
     runtime = get_runtime_vad_settings()
     if energy_threshold is None:
@@ -539,5 +545,6 @@ def record_utterance_streaming(
         on_final=on_final,
         on_speech_start=on_speech_start,
         on_speech_end=on_speech_end,
+        on_amplitude=on_amplitude,
     )
     return engine.run()

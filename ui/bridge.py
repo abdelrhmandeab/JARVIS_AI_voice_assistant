@@ -197,6 +197,14 @@ class JarvisBridge:
         if command_type == COMMAND_MUTE_TOGGLE:
             self.muted = bool(message.get("muted"))
             logger.info("UI bridge mute toggled: %s", self.muted)
+            try:
+                from audio.tts import speech_engine
+
+                speech_engine.set_enabled(not self.muted)
+                if self.muted:
+                    speech_engine.interrupt()
+            except Exception:
+                logger.debug("Failed to apply mute to speech engine", exc_info=True)
             return
 
         if command_type == COMMAND_CONFIG_REQUEST:
@@ -208,20 +216,61 @@ class JarvisBridge:
             return
 
         if command_type == COMMAND_SETTING_UPDATE:
-            # TODO: Apply runtime-safe setting updates in a later bridge phase.
-            logger.info("UI bridge setting_update received: key=%s", message.get("key"))
+            key = str(message.get("key") or "")
+            value = message.get("value")
+            logger.info("UI bridge setting_update received: key=%s", key)
+            await asyncio.to_thread(self._apply_setting_update, key, value)
+            await websocket.send_text(to_json(self._config_event()))
             return
 
         if command_type == COMMAND_FEATURE_FLAG:
-            # TODO: Apply runtime-safe feature flag updates in a later bridge phase.
-            logger.info(
-                "UI bridge feature_flag received: flag=%s enabled=%s",
-                message.get("flag"),
-                message.get("enabled"),
-            )
+            flag = str(message.get("flag") or "")
+            enabled = bool(message.get("enabled"))
+            if flag in config.FEATURE_FLAGS:
+                config.FEATURE_FLAGS[flag] = enabled
+                logger.info("UI bridge feature_flag applied: flag=%s enabled=%s", flag, enabled)
+            else:
+                logger.info("UI bridge feature_flag ignored (unknown flag): %s", flag)
+            await websocket.send_text(to_json(self._config_event()))
             return
 
         logger.info("UI bridge ignored unknown command type: %s", command_type)
+
+    def _apply_setting_update(self, key: str, value) -> None:
+        try:
+            if key == "JARVIS_STT_LANGUAGE_HINT":
+                from audio.stt import set_runtime_stt_settings
+
+                set_runtime_stt_settings(language_hint=value)
+            elif key == "JARVIS_LLM_MODEL":
+                from llm.ollama_client import set_runtime_model
+                from core.hardware_detect import recommend_model_tier
+                from core.config import LLM_OLLAMA_BASE_URL, LLM_OLLAMA_NUM_CTX, LLM_LIGHTWEIGHT_NUM_CTX
+
+                model_name = str(value or "").strip()
+                if not model_name or model_name.lower() == "auto":
+                    tier = recommend_model_tier(str(LLM_OLLAMA_BASE_URL or "http://localhost:11434").rstrip("/"))
+                    set_runtime_model(
+                        tier.get("model"),
+                        num_ctx=tier.get("num_ctx"),
+                        lightweight_num_ctx=tier.get("lightweight_num_ctx"),
+                        tier=tier.get("tier"),
+                    )
+                else:
+                    set_runtime_model(
+                        model_name,
+                        num_ctx=LLM_OLLAMA_NUM_CTX,
+                        lightweight_num_ctx=LLM_LIGHTWEIGHT_NUM_CTX,
+                        tier="medium",
+                    )
+            elif key == "JARVIS_PERSONA":
+                from core.persona import persona_manager
+
+                persona_manager.set_profile(str(value or ""))
+            else:
+                logger.info("UI bridge setting_update ignored (unknown key): %s", key)
+        except Exception:
+            logger.exception("UI bridge setting_update failed for key=%s", key)
 
     def _route_text_command(self, text: str, language) -> str:
         try:
@@ -255,14 +304,28 @@ class JarvisBridge:
             logger.debug("Bridge state listener failed", exc_info=True)
 
     def _config_event(self) -> dict:
+        try:
+            from llm.ollama_client import get_runtime_model
+
+            model = get_runtime_model(default=getattr(config, "LLM_MODEL", ""))
+        except Exception:
+            model = getattr(config, "LLM_MODEL", "")
+
+        try:
+            from core.persona import persona_manager
+
+            persona = persona_manager.get_profile() or getattr(config, "PERSONA_DEFAULT", "")
+        except Exception:
+            persona = getattr(config, "PERSONA_DEFAULT", "")
+
         values = {
-            "model": getattr(config, "LLM_MODEL", ""),
+            "model": model,
             "model_tier": "auto" if bool(getattr(config, "LLM_AUTO_SELECT_MODEL", False)) else "configured",
             "wake_mode": getattr(config, "WAKE_WORD_MODE", ""),
             "feature_flags": dict(getattr(config, "FEATURE_FLAGS", {}) or {}),
             "stt_backend": getattr(config, "STT_BACKEND", ""),
             "tts_backend": getattr(config, "TTS_DEFAULT_BACKEND", ""),
-            "persona": getattr(config, "PERSONA_DEFAULT", ""),
+            "persona": persona,
         }
         return make_event(EVENT_CONFIG, values=values)
 

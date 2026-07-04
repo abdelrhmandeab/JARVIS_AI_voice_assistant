@@ -109,6 +109,15 @@ from core.runtime_coordinator import RuntimePhase, coordinator
 from core.session_memory import session_memory
 from core.shutdown import perform_shutdown_cleanup, setup_shutdown
 from os_control.confirmation import confirmation_manager
+from ui.bridge import bridge as ui_bridge
+from ui.events import (
+    EVENT_AMPLITUDE,
+    EVENT_FINAL_TRANSCRIPT,
+    EVENT_METRICS,
+    EVENT_PARTIAL_TRANSCRIPT,
+    EVENT_RESPONSE,
+    make_event,
+)
 
 try:
     from tools.live_data import gather_live_data as _gather_live_data
@@ -128,6 +137,7 @@ _ARABIC_CHAR_RE = re.compile(r"[\u0600-\u06FF]")
 _LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
 _LAST_STT_LANGUAGE_CONFIDENCE = 0.0
 _OLLAMA_AUTOSTART_PROCESS = None
+_LAST_DOCTOR_SNAPSHOT = {"ok": True, "checks": []}
 
 # Match transcripts that are pure non-speech annotations from ElevenLabs/Whisper
 # (e.g. "[صوت انطلاق سيارة]", "[music]", "[laughter]", "(silence)") — these
@@ -392,6 +402,14 @@ def _is_stt_annotation_only(text):
 
 
 def _resolve_stt_language_hint(*, wake_source=None):
+    # UI-driven runtime override (ui/bridge.py setting_update) takes priority
+    # over the static startup config — checked first since callers always pass
+    # an explicit, non-empty hint downstream, which would otherwise bypass
+    # audio.stt's own runtime-settings fallback.
+    runtime_hint = str(stt_runtime.get_runtime_stt_settings().get("language_hint") or "").strip().lower()
+    if runtime_hint in {"ar", "en"}:
+        return runtime_hint
+
     hint = str(STT_LANGUAGE_HINT or "auto").strip().lower()
     if hint in {"ar", "arabic"}:
         return "ar"
@@ -405,6 +423,16 @@ def _resolve_stt_language_hint(*, wake_source=None):
     # Default to auto: the STT layer picks and locks ar/en using streaming
     # text, this hint, or a tiny one-second probe before full transcription.
     return "auto"
+
+
+def _wire_language(value: str) -> str:
+    """Normalize a language value to 'en'/'ar' for the UI bridge wire protocol,
+    which never accepts 'auto' — fall back to the session's preferred language."""
+    lang = str(value or "").strip().lower()
+    if lang in {"ar", "en"}:
+        return lang
+    preferred = str(session_memory.get_preferred_language() or "").strip().lower()
+    return preferred if preferred in {"ar", "en"} else "en"
 
 
 def _is_interrupt_command(text):
@@ -772,8 +800,9 @@ def _process_utterance(
             logger.info("Skipping non-speech STT annotation: %s", _safe_log_text(text))
             return
         logger.info("Transcript[%s]: %s", detected_language or "unknown", _safe_log_text(text))
-
-        
+        ui_bridge.broadcast(
+            make_event(EVENT_FINAL_TRANSCRIPT, text=text, language=_wire_language(detected_language))
+        )
 
         # Demo mode: print intent/confidence overlay to console for presentations.
         if DEMO_MODE:
@@ -821,6 +850,9 @@ def _process_utterance(
                 early_resp = pipeline.get_early_response()
                 if early_resp:
                     print(f"Jarvis (early): {early_resp}")
+                    ui_bridge.broadcast(
+                        make_event(EVENT_RESPONSE, text=early_resp, language=_wire_language(detected_language))
+                    )
                 logger.info("ConcurrentPipeline: skipping full route — already handled via early execution.")
                 timing_parts.update(pipeline.get_early_timings())
                 route_success = True
@@ -932,6 +964,13 @@ def _process_utterance(
                         if sub_response:
                             all_responses.append(sub_response)
                             print(f"Jarvis: {sub_response}")
+                            ui_bridge.broadcast(
+                                make_event(
+                                    EVENT_RESPONSE,
+                                    text=sub_response,
+                                    language=_wire_language(detected_language),
+                                )
+                            )
                     response = " ".join(all_responses).strip() or "Done."
                     route_success = True
                     _route_duration = time.perf_counter() - route_started
@@ -974,6 +1013,9 @@ def _process_utterance(
 
         if not is_compound:
             print(f"Jarvis: {response}")
+            ui_bridge.broadcast(
+                make_event(EVENT_RESPONSE, text=response, language=_wire_language(tts_language))
+            )
         interrupted = coordinator.current_phase == RuntimePhase.LISTENING
         if (
             should_speak_response
@@ -999,6 +1041,12 @@ def _process_utterance(
             lang=detected_language or "unknown",
             intent=turn_intent or "unknown",
         )
+        stages = [
+            {"name": name, "duration_ms": round(duration * 1000.0, 1)}
+            for name, duration in timing_parts.items()
+            if duration
+        ]
+        ui_bridge.broadcast(make_event(EVENT_METRICS, stages=stages, doctor=dict(_LAST_DOCTOR_SNAPSHOT)))
         _safe_remove(audio_file)
         # Open a follow-up window whenever a real utterance was processed.
         # The main thread's listen_for_wake_word() will exit on this signal
@@ -1036,6 +1084,7 @@ def _cleanup_stale_temp_files():
 
 
 def _run_doctor_diagnostics(trigger):
+    global _LAST_DOCTOR_SNAPSHOT
     started = time.perf_counter()
     doctor_logger = get_logger("doctor")
     try:
@@ -1061,6 +1110,8 @@ def _run_doctor_diagnostics(trigger):
         ]
         if failing:
             doctor_logger.warning("Doctor failures: %s", ", ".join(failing) or "unknown")
+        _LAST_DOCTOR_SNAPSHOT = {"ok": ok, "checks": payload.get("checks", [])}
+        ui_bridge.broadcast(make_event(EVENT_METRICS, stages=[], doctor=dict(_LAST_DOCTOR_SNAPSHOT)))
         return payload
     except Exception as exc:
         metrics.record_diagnostic(f"doctor_{trigger}", False, time.perf_counter() - started)
@@ -1778,6 +1829,9 @@ def run():
                 time.sleep(float(REALTIME_BACKPRESSURE_POLL_SECONDS))
                 metrics.record_stage("backpressure_wait", float(REALTIME_BACKPRESSURE_POLL_SECONDS), success=True)
                 continue
+            if ui_bridge.muted:
+                time.sleep(0.2)
+                continue
             if coordinator.current_phase in (RuntimePhase.IDLE, RuntimePhase.LISTENING):
                 if speech_engine.is_speaking():
                     coordinator.set_phase(RuntimePhase.SPEAKING)
@@ -1852,9 +1906,10 @@ def run():
 
                 # Task 1.3: create pipeline before recording so partials are
                 # processed concurrently while the user is still speaking.
+                _turn_language_hint = _resolve_stt_language_hint(wake_source=wake_source) or ""
                 concurrent_pipeline = ConcurrentPipeline(
                     executor,
-                    language_hint=_resolve_stt_language_hint(wake_source=wake_source) or "",
+                    language_hint=_turn_language_hint,
                 )
 
             if wake_source == "wake":
@@ -1876,9 +1931,20 @@ def run():
                 nonlocal _partial_latency_recorded
                 _on_partial_transcript(partial_text)
                 concurrent_pipeline.on_partial(partial_text)
+                if partial_text:
+                    ui_bridge.broadcast(
+                        make_event(
+                            EVENT_PARTIAL_TRANSCRIPT,
+                            text=partial_text,
+                            language=_wire_language(_turn_language_hint),
+                        )
+                    )
                 if not _partial_latency_recorded and (partial_text or "").strip():
                     _partial_latency_recorded = True
                     latency_tracker.record("stt_partial_latency", time.perf_counter() - record_started)
+
+            def _pipeline_amplitude(level):
+                ui_bridge.broadcast(make_event(EVENT_AMPLITUDE, level=level))
 
             with stage_timer("recording", source=wake_source or "unknown") as recording_timing:
                 capture = record_utterance_streaming(
@@ -1893,6 +1959,7 @@ def run():
                     ),
                     enable_partials=True,
                     on_partial=_pipeline_partial,
+                    on_amplitude=_pipeline_amplitude,
                 )
             metrics.record_stage(
                 "record_audio",
