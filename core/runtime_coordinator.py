@@ -26,7 +26,13 @@ class RuntimePhase(enum.Enum):
     SPEAKING = "speaking"
 
 
-_INTERRUPTIBLE = frozenset({RuntimePhase.THINKING, RuntimePhase.SPEAKING})
+# ROUTING is included so the wake word is accepted as soon as the previous
+# command finishes transcribing and Jarvis starts deciding what to do —
+# closing the gap where saying "Jarvis" felt ignored until TTS actually
+# started. EXECUTING_COMMAND is deliberately excluded: a command may already
+# be changing real state there (file ops, system toggles) and cancelling it
+# mid-action would be unsafe.
+_INTERRUPTIBLE = frozenset({RuntimePhase.ROUTING, RuntimePhase.THINKING, RuntimePhase.SPEAKING})
 
 
 def _play_ack_tone() -> None:

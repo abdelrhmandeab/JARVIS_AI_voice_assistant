@@ -665,7 +665,7 @@ class SpeechEngine:
             queue_thread.join(timeout=2)
         return True
 
-    def speak_async(self, text, language=None):
+    def speak_async(self, text, language=None, backend=None):
         if not (text or "").strip():
             return False, "Nothing to speak."
 
@@ -678,6 +678,7 @@ class SpeechEngine:
         thread = threading.Thread(
             target=self._run_speech,
             args=(text, language),
+            kwargs={"backend_override": backend},
             name="jarvis-speech",
             daemon=True,
         )
@@ -1284,10 +1285,10 @@ class SpeechEngine:
 
         return False, "none"
 
-    def _run_speech(self, text, language=None):
+    def _run_speech(self, text, language=None, backend_override=None):
         started = time.perf_counter()
         success = True
-        backend = str(self._resolve_backend() or "auto").strip().lower()
+        backend = str(backend_override or self._resolve_backend() or "auto").strip().lower()
         quality_mode = self.get_quality_mode()
         style = persona_manager.get_speech_style()
         logger.info("Speech backend=%s quality=%s style=%s", backend, quality_mode, style)
@@ -1864,6 +1865,20 @@ class SpeechEngine:
 
         try:
             sd.stop()
+            # Warm the output device with a tiny burst of silence at the
+            # SAME sample rate immediately before the real call. A stream
+            # opened even ~1s earlier (e.g. while a cloud TTS request was
+            # still in flight) goes cold again and the driver still pays the
+            # ~150-250ms open cost on the very next sd.play() — so warming
+            # here, right before the real audio, is what actually avoids the
+            # clipped/stuttered start rather than warming before the network
+            # fetch.
+            try:
+                import numpy as _np
+                _warmup_silence = _np.zeros(int(playback_rate * 0.04), dtype=_np.float32)
+                sd.play(_warmup_silence, samplerate=playback_rate, blocking=True)
+            except Exception:
+                pass
             if blocking:
                 if self._stop_event.is_set():
                     sd.stop()

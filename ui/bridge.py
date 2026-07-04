@@ -53,6 +53,7 @@ class JarvisBridge:
         self._running = False
         self._state_listener = None
         self._server_thread = None
+        self._server = None
         self._start_lock = threading.Lock()
         self._missing_deps_logged = False
 
@@ -94,6 +95,21 @@ class JarvisBridge:
             self._server_thread.start()
             logger.info("UI bridge starting on ws://%s:%s/ws", self.host, self.port)
 
+    def stop(self, timeout: float = 3.0) -> None:
+        """Signal the uvicorn server to exit and wait for its thread to stop.
+        Safe to call even if the bridge was never started."""
+        server = self._server
+        loop = self.loop
+        thread = self._server_thread
+        if server is not None and loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(setattr, server, "should_exit", True)
+            except Exception:
+                logger.debug("Failed to signal UI bridge server to exit", exc_info=True)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+        self._running = False
+
     def _create_app(self):
         app = FastAPI()
 
@@ -109,12 +125,18 @@ class JarvisBridge:
 
     def _run_server(self, app) -> None:
         try:
-            uvicorn.run(app, host=self.host, port=self.port, log_level="info")
+            # Build our own Server instead of uvicorn.run() so stop() has a
+            # real handle to signal shutdown with — uvicorn.run() blocks with
+            # no way to ask it to exit from another thread.
+            server_config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info")
+            self._server = uvicorn.Server(server_config)
+            self._server.run()
         except Exception:
             logger.exception("UI bridge server failed")
         finally:
             self._running = False
             self.loop = None
+            self._server = None
             try:
                 if self._state_listener is not None:
                     dialogue_manager.unregister_state_listener(self._state_listener)
@@ -289,6 +311,10 @@ bridge = JarvisBridge()
 
 def start_bridge() -> None:
     bridge.start()
+
+
+def stop_bridge() -> None:
+    bridge.stop()
 
 
 def broadcast_event(event: dict) -> None:

@@ -1189,6 +1189,30 @@ def _ensure_ollama_running():
     return False
 
 
+def stop_ollama_autostart_process() -> None:
+    """Terminate the Ollama server process Jarvis itself spawned, if any.
+
+    Only touches a process Jarvis started — if Ollama was already running
+    before Jarvis launched, _OLLAMA_AUTOSTART_PROCESS stays None and this
+    is a no-op, leaving a pre-existing/independently-managed Ollama alone.
+    """
+    global _OLLAMA_AUTOSTART_PROCESS
+    process = _OLLAMA_AUTOSTART_PROCESS
+    if process is None:
+        return
+    _OLLAMA_AUTOSTART_PROCESS = None
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except Exception:
+        try:
+            process.kill()
+        except Exception as exc:
+            logger.warning("Failed to stop auto-started Ollama process: %s", exc)
+
+
 def _preload_wake_word_runtime():
     """Warm wake-word model/device resources before entering wake listening loop."""
     started = time.perf_counter()
@@ -1498,7 +1522,12 @@ def _speak_startup_greeting():
         time.sleep(GREETING_PRESPEAK_SETTLE_MS / 1000.0)
 
     try:
-        started, _ = speech_engine.speak_async(text, language=language)
+        # Force edge-tts (not ElevenLabs) for the greeting: ElevenLabs' extra
+        # network round-trip during startup — while STT/wake models are still
+        # settling — is the source of the greeting audio glitch/stutter.
+        # edge-tts is local-ish (no API key, low first-byte latency) and used
+        # as the fallback everywhere else anyway.
+        started, _ = speech_engine.speak_async(text, language=language, backend="edge_tts")
         if started and GREETING_BLOCKING:
             # Block until TTS finishes so the wake loop doesn't start mid-greeting.
             _wait_for_tts_completion(max_wait=30.0)

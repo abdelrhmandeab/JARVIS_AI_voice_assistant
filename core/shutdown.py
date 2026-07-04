@@ -53,6 +53,20 @@ def perform_shutdown_cleanup():
         logger.debug("Tray shutdown cleanup skipped: %s", exc)
 
     try:
+        from ui.bridge import stop_bridge
+
+        stop_bridge()
+    except Exception as exc:
+        logger.warning("UI bridge shutdown cleanup failed: %s", exc)
+
+    try:
+        from core.orchestrator import stop_ollama_autostart_process
+
+        stop_ollama_autostart_process()
+    except Exception as exc:
+        logger.warning("Ollama autostart process shutdown cleanup failed: %s", exc)
+
+    try:
         from core.memory_store import vector_memory
 
         vector_memory.drain(timeout=2.0)

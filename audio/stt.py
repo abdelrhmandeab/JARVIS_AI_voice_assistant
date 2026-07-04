@@ -361,15 +361,21 @@ def _validate_transcript_language(text: str, locked_lang: str) -> bool:
         return dominant / float(total_alpha) >= float(STT_VALIDATION_DOMINANT_SCRIPT_MIN)
 
 
-def _below_confidence_floor(text: str, confidence: float) -> bool:
+def _below_confidence_floor(text: str, confidence: Optional[float]) -> bool:
     """Short, low-confidence transcripts are more likely noise/hallucination
     than real speech — treat them as silence rather than risking a bogus
     command. Longer transcripts are left alone even at low confidence since
-    Whisper's language_probability is a poor signal once there's real content."""
+    Whisper's language_probability is a poor signal once there's real content.
+
+    confidence=None means the backend simply doesn't report one (e.g.
+    ElevenLabs' scribe API has no top-level confidence field) — that is NOT
+    the same as a known-low score, so it must never trigger the floor."""
+    if confidence is None:
+        return False
     word_count = len(str(text or "").split())
     if word_count > int(STT_MIN_CONFIDENCE_SHORT_WORDS):
         return False
-    return float(confidence or 0.0) < float(STT_MIN_CONFIDENCE)
+    return float(confidence) < float(STT_MIN_CONFIDENCE)
 
 
 def _finalize_stt_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -847,7 +853,7 @@ def _transcribe_with_faster_whisper_model(
         language = _normalize_detected_language(detect_language(text))
 
     confidence = getattr(info, "language_probability", None)
-    confidence_value = float(confidence) if isinstance(confidence, (float, int)) else 0.0
+    confidence_value = float(confidence) if isinstance(confidence, (float, int)) else None
 
     return {
         "text": text,
@@ -977,7 +983,11 @@ def _transcribe_with_elevenlabs(
     confidence_raw = payload.get("confidence")
     if not isinstance(confidence_raw, (float, int)):
         confidence_raw = payload.get("average_confidence")
-    confidence_value = float(confidence_raw) if isinstance(confidence_raw, (float, int)) else 0.0
+    # ElevenLabs' scribe API does not actually return a top-level confidence
+    # field today — leave this None (unknown) rather than fabricating 0.0,
+    # which would make every ElevenLabs transcript look like a zero-confidence
+    # hallucination to the confidence-floor check downstream.
+    confidence_value = float(confidence_raw) if isinstance(confidence_raw, (float, int)) else None
 
     detected_language = _normalize_detected_language(
         str(payload.get("language_code") or payload.get("language") or language or "")
@@ -1037,12 +1047,14 @@ def _validated_backend_result(
     method: str,
 ) -> Optional[Dict[str, Any]]:
     text = str(result.get("text", "") or "").strip()
-    if text and _below_confidence_floor(text, float(result.get("confidence") or 0.0)):
+    raw_confidence = result.get("confidence")
+    confidence_for_floor = float(raw_confidence) if isinstance(raw_confidence, (float, int)) else None
+    if text and _below_confidence_floor(text, confidence_for_floor):
         _STT_LOG.info(
             "stt_confidence_floor rejected short low-confidence transcript "
             "(words=%d confidence=%.2f)",
             len(text.split()),
-            float(result.get("confidence") or 0.0),
+            float(confidence_for_floor or 0.0),
         )
         silence = _silence_result(
             locked_lang=locked_lang,
