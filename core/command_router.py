@@ -1,0 +1,5733 @@
+import os
+import re
+import hashlib
+import threading
+import time
+from collections import OrderedDict
+
+from core.command_parser import (
+    ParsedCommand,
+    parse_command,
+    parse_duration_from_text,
+    try_parse_pin_confirm,
+    extract_pin_from_text,
+    _looks_like_explanatory_llm_query,
+)
+from core.config import (
+    CLARIFICATION_CORRECTION_WINDOW_SECONDS,
+    CODE_SWITCH_CONTINUITY_ENABLED,
+    CODE_SWITCH_CONTINUITY_WINDOW,
+    CODE_SWITCH_DOMINANT_RATIO,
+    CLARIFICATION_FALLBACK_AFTER_MISSES,
+    CLARIFICATION_PREFERENCE_MAX_AGE_SECONDS,
+    MEMORY_COMMAND_USAGE_ENABLED,
+    MEMORY_REF_SHADOW,
+    MEMORY_TIMING_LOG,
+    FOLLOWUP_DESTRUCTIVE_REFERENCE_MIN_CONFIDENCE,
+    FOLLOWUP_DESTRUCTIVE_REQUIRE_EXPLICIT_REFERENCE,
+    FOLLOWUP_APP_REFERENCE_HALF_LIFE_SECONDS,
+    FOLLOWUP_APP_REFERENCE_MAX_AGE_SECONDS,
+    FOLLOWUP_FILE_REFERENCE_HALF_LIFE_SECONDS,
+    FOLLOWUP_FILE_REFERENCE_MAX_AGE_SECONDS,
+    FOLLOWUP_PENDING_CONFIRMATION_HALF_LIFE_SECONDS,
+    FOLLOWUP_PENDING_CONFIRMATION_MAX_AGE_SECONDS,
+    FOLLOWUP_REFERENCE_CONFLICT_WINDOW_SECONDS,
+    FOLLOWUP_REFERENCE_MAX_AGE_SECONDS,
+    FOLLOWUP_REFERENCE_MIN_CONFIDENCE,
+    LLM_APPEND_SOURCE_CITATIONS,
+    LLM_DEFAULT_LANGUAGE,
+    LLM_LIGHTWEIGHT_NUM_CTX,
+    LLM_RESPONSE_CACHE_ENABLED,
+    LLM_RESPONSE_CACHE_KEY_INCLUDES_PERSONA,
+    LLM_RESPONSE_CACHE_MAX_QUERY_WORDS,
+    LLM_RESPONSE_CACHE_MAX_SIZE,
+    LLM_RESPONSE_CACHE_TTL_FACTUAL_SECONDS,
+    LLM_RESPONSE_CACHE_TTL_OPINION_SECONDS,
+    LLM_RESPONSE_CACHE_TTL_SECONDS,
+    STT_LANGUAGE_HINT,
+    NLU_ENTITY_EXTRACTION_ENABLED,
+    RESPONSE_SHAPER_ENABLED,
+    NLU_PARSER_FASTPATH_CONFIDENCE_FLOOR,
+    NLU_PARSER_FASTPATH_ENABLED,
+    NLU_INTENT_CONFIDENCE_THRESHOLD,
+    NLU_INTENT_ROUTING_ENABLED,
+    NLU_INTENT_THRESHOLD_BY_FAMILY,
+    SEMANTIC_ROUTER_ENABLED,
+    SEMANTIC_ROUTER_CONFIDENCE_THRESHOLD,
+    SEMANTIC_MIN_CONFIDENCE,
+    SEMANTIC_MIN_MARGIN,
+    SEMANTIC_TOPK,
+    CODESWITCH_ROUTER_ENABLED,
+    ROUTE_VERIFIER_ENABLED,
+    FAST_COMMAND_MIN_CONFIDENCE,
+    CLARIFY_FROM_TEMPLATES,
+    CLARIFY_MAX_ROUNDS,
+    STRUCTURED_LLM_NLU_ENABLED,
+    STRUCTURED_LLM_NLU_ONLY_ON_UNCERTAIN,
+    STRUCTURED_LLM_NLU_TIMEOUT_SECONDS,
+    NLU_SHADOW_MARGIN,
+    ROUTE_TIMING_LOG,
+    WEB_SEARCH_ENABLED,
+    WEATHER_DEFAULT_CITY,
+    PERSONA_LENGTH_TARGET_ENABLED,
+    PERSONA_RESPONSE_MAX_WORDS,
+    RESPONSE_MODE_FEATURE_ENABLED,
+    TONE_SENSITIVE_NEUTRAL_ENABLED,
+    TONE_ADAPTATION_ENABLED,
+    LLM_BACKEND,
+    SENSITIVE_CONFIRM_MODE,
+    FILE_HUMANIZE_PATHS,
+    FILE_SPOKEN_RESULTS_MAX,
+)
+from core.demo_mode import is_enabled as is_demo_mode_enabled
+from core.demo_mode import set_enabled as set_demo_mode
+from core.handlers import audit, batch, file_navigation
+from core.handlers.advanced_operations import (
+    handle_batch_file_operation,
+    handle_semantic_search,
+)
+from core.handlers import job_queue as job_queue_handler
+from core.handlers import knowledge_base, memory, persona, policy, search_index, voice
+from core.intent_confidence import (
+    assess_intent_confidence,
+    build_clarification_payload,
+    resolve_clarification_reply,
+)
+from core.language_gate import UNSUPPORTED_LANGUAGE_MESSAGE, detect_supported_language, looks_romanized_arabic
+from core.logger import get_logger, logger, log_structured
+from core.metrics import metrics, stage_timer, get_thread_stage_timing
+from core.persona import persona_manager
+from core.response_templates import anti_repetition_prefixes, detect_language_hint, normalize_language, render_template
+from core.response_shaper import response_shaper
+from core.session_memory import session_memory
+from core.voice_normalizer import normalize_for_voice, normalize_weather_block
+from llm.ollama_client import ask_llm_streaming, get_runtime_lightweight_num_ctx, get_runtime_model_tier, get_runtime_num_ctx
+from llm.prompt_builder import build_prompt_package, build_lightweight_prompt, build_tool_augmented_prompt, build_claude_messages
+from tools.live_data import gather_live_data
+from utils.language_detector import detect_language
+
+llm_logger = get_logger("llm")
+try:
+    from nlp.intent_classifier import classify_intent as _classify_keyword_intent
+except Exception:
+    _classify_keyword_intent = None
+try:
+    from nlp.semantic_router import (
+        classify_semantic_topk as _classify_semantic_topk,
+        is_router_ready as _is_semantic_router_ready,
+    )
+except Exception:
+    _classify_semantic_topk = None
+    _is_semantic_router_ready = None
+try:
+    from nlp.nlu import understand as _nlu_understand
+except Exception:
+    _nlu_understand = None
+try:
+    from nlp.code_switch_router import try_codeswitch as _try_codeswitch
+except Exception:
+    _try_codeswitch = None
+try:
+    from llm.structured_nlu import understand_structured as _understand_structured
+except Exception:
+    _understand_structured = None
+from core import route_verifier
+from core import clarification_builder
+from os_control.action_log import log_action, read_recent_actions
+from os_control.adapter_result import to_router_tuple
+from os_control.app_ops import (
+    execute_confirmed_app_operation,
+    open_app_result,
+    refresh_app_catalog_result,
+    request_close_app_result,
+    resolve_app_request,
+)
+from os_control.confirmation import confirmation_manager
+from os_control.file_ops import (
+    execute_confirmed_file_operation,
+    find_files,
+    get_current_directory,
+    undo_last_action,
+)
+from os_control.path_resolver import humanize_path
+from os_control.job_queue import job_queue_service
+from os_control.policy import policy_engine
+from os_control.search_index import search_index_service
+from os_control.system_ops import execute_system_command_result, request_system_command_result
+from os_control.timer_ops import cancel_timer, list_timers, set_alarm_at, set_timer
+from os_control.clipboard_ops import clear_clipboard, read_clipboard, write_clipboard
+from os_control.sysinfo_ops import get_battery_status, get_system_info
+from os_control.email_ops import draft_email
+from os_control.calendar_ops import create_calendar_event
+from os_control.settings_ops import open_settings_page
+from llm.tool_caller import call_tool_tier, call_tool_tier_claude, tool_calls_to_parsed_commands
+
+
+_JOB_QUEUE_EXECUTOR_READY = False
+_LLM_RESPONSE_CACHE = OrderedDict()
+_LLM_RESPONSE_CACHE_STATS = {
+    "hits": 0,
+    "misses": 0,
+    "stores": 0,
+    "evictions": 0,
+}
+
+_DRY_RUN_MUTATING_INTENTS = {
+    "OS_FILE_NAVIGATION",
+    "OS_FILE_NAVIGATION_BATCH",
+    "OS_APP_OPEN",
+    "OS_APP_CLOSE",
+    "OS_SYSTEM_COMMAND",
+    "OS_EMAIL",
+    "OS_CALENDAR",
+    "OS_SETTINGS",
+    "BATCH_COMMAND",
+    "JOB_QUEUE_COMMAND",
+}
+
+
+def _is_mutating_dry_run_candidate(parsed):
+    intent = str(getattr(parsed, "intent", "") or "").strip().upper()
+    action = str(getattr(parsed, "action", "") or "").strip().lower()
+    if intent not in _DRY_RUN_MUTATING_INTENTS:
+        return False
+    if intent == "OS_FILE_NAVIGATION" and action in {"pwd", "ls", "cd", "open_item"}:
+        return False
+    return True
+
+
+def _nlu_threshold_for_intent(intent: str):
+    intent_key = str(intent or "").strip().upper()
+    family_threshold = NLU_INTENT_THRESHOLD_BY_FAMILY.get(intent_key)
+    if family_threshold is None:
+        return float(NLU_INTENT_CONFIDENCE_THRESHOLD)
+    return float(family_threshold)
+
+
+_PARSER_FASTPATH_INTENTS = {
+    "OS_APP_OPEN",
+    "OS_APP_CLOSE",
+    "OS_FILE_SEARCH",
+    "OS_FILE_NAVIGATION",
+    "OS_FILE_SEARCH_ADVANCED",
+    "OS_FILE_NAVIGATION_BATCH",
+    "COMMAND_CHAIN",
+    "OS_SYSTEM_COMMAND",
+    "OS_SCREEN_DESCRIBE",
+    "OS_TIMER",
+    "OS_REMINDER",
+    "JOB_QUEUE_COMMAND",
+    "VOICE_COMMAND",
+    "MEMORY_COMMAND",
+    "PERSONA_COMMAND",
+    "POLICY_COMMAND",
+    "SEARCH_INDEX_COMMAND",
+    "AUDIT_VERIFY",
+    "AUDIT_RESEAL",
+    "AUDIT_LOG_REPORT",
+    "OBSERVABILITY_REPORT",
+    "METRICS_REPORT",
+    "DEMO_MODE",
+    "OS_CONFIRMATION",
+    "OS_ROLLBACK",
+}
+
+
+def _select_parser_fastpath_assessment(source_text, parser_candidate, language):
+    if not NLU_PARSER_FASTPATH_ENABLED:
+        return None
+
+    intent = str(getattr(parser_candidate, "intent", "") or "").strip().upper()
+    if not intent or intent == "LLM_QUERY":
+        return None
+    if intent not in _PARSER_FASTPATH_INTENTS:
+        return None
+
+    assessment = assess_intent_confidence(source_text, parser_candidate, language=language)
+    if assessment.should_clarify:
+        return assessment
+
+    threshold = _nlu_threshold_for_intent(intent)
+    confidence = float(assessment.confidence or 0.0)
+    confidence_floor = max(0.0, min(1.0, float(NLU_PARSER_FASTPATH_CONFIDENCE_FLOOR or 0.55)))
+    fastpath_gate = min(float(threshold), confidence_floor)
+    if confidence >= fastpath_gate:
+        return assessment
+    return None
+
+
+def _should_try_tool_tier(original_text, parser_candidate):
+    intent = str(getattr(parser_candidate, "intent", "") or "").strip().upper()
+    if intent and intent != "LLM_QUERY":
+        return False
+
+    if _looks_keyword_nlp_informational_query(original_text):
+        return False
+
+    tier = get_runtime_model_tier()
+    if tier not in {"medium", "high"}:
+        return False
+
+    normalized = " ".join(str(original_text or "").lower().split()).strip()
+    if not normalized:
+        return False
+
+    words = normalized.split()
+    if len(words) <= 3:
+        return False
+
+    multi_step_cues = (" and ", " then ", " and then ", " و ", " وبعدها ", " وبعدين ")
+    if any(cue in f" {normalized} " for cue in multi_step_cues):
+        return True
+
+    return len(words) >= 6
+
+
+_APP_NAME_LOOKUP_CACHE = None
+
+
+def _build_app_alias_lookup():
+    """Build a sorted (longest-first) list of (alias_lower, canonical_name) from the app catalog."""
+    global _APP_NAME_LOOKUP_CACHE
+    if _APP_NAME_LOOKUP_CACHE is not None:
+        return _APP_NAME_LOOKUP_CACHE
+    try:
+        from os_control.app_ops import _APP_CATALOG
+    except Exception:
+        _APP_NAME_LOOKUP_CACHE = []
+        return _APP_NAME_LOOKUP_CACHE
+    pairs = []
+    for entry in _APP_CATALOG.values():
+        canonical = str(entry.get("canonical_name") or "").strip()
+        if not canonical:
+            continue
+        for alias in entry.get("aliases", []):
+            alias_str = str(alias or "").strip().lower()
+            if alias_str:
+                pairs.append((alias_str, canonical))
+        # Also include the canonical name itself as a self-match
+        pairs.append((canonical.lower(), canonical))
+    # Sort longest-alias first so "google chrome" wins over "chrome"
+    pairs.sort(key=lambda p: -len(p[0]))
+    _APP_NAME_LOOKUP_CACHE = pairs
+    return _APP_NAME_LOOKUP_CACHE
+
+
+def _build_slot_question(intent: str, slot: str, language: str) -> str:
+    if CLARIFY_FROM_TEMPLATES:
+        return clarification_builder.build_slot_clarification(intent, slot, language)
+    lang = str(language or "").strip().lower()[:2]
+    return "Could you clarify?" if lang != "ar" else "ممكن توضح أكتر؟"
+
+
+def _extract_app_name_from_text(source_text):
+    """Scan `source_text` for any known app alias (longest match wins).
+
+    Returns the canonical app name or empty string. Used when the semantic
+    router classifies an utterance as OS_APP_OPEN/OS_APP_CLOSE but the regex
+    parser couldn't extract a structured app_name (filler words, code-switching).
+    """
+    raw = str(source_text or "").lower()
+    if not raw:
+        return ""
+    # Strip punctuation that breaks word-boundary matches (e.g. "Notepad?",
+    # "Notepad,", "Notepad."). Keep only Latin letters, digits, Arabic letters,
+    # and whitespace.
+    cleaned = re.sub(r"[^\w؀-ۿ\s]", " ", raw, flags=re.UNICODE)
+    cleaned = " ".join(cleaned.split()).strip()
+    if not cleaned:
+        return ""
+    padded = " " + cleaned + " "
+    for alias, canonical in _build_app_alias_lookup():
+        if (" " + alias + " ") in padded:
+            return canonical
+    return ""
+
+
+_PLAY_MUSIC_INTENT_MARKERS = (
+    "play music", "play some music", "start music", "start playing",
+    "resume music", "resume playback", "play song", "play songs",
+    "شغل موسيقى", "شغل الموسيقى", "شغل اغاني", "شغل أغاني", "شغل المزيكا",
+    "شغّل الموسيقى", "شغل اغنية", "شغل أغنية", "تشغيل الموسيقى",
+)
+
+
+def _looks_like_play_music_request(source_text):
+    text = " ".join(str(source_text or "").lower().split()).strip()
+    if not text:
+        return False
+    return any(marker in text for marker in _PLAY_MUSIC_INTENT_MARKERS)
+
+
+_MUSIC_APP_CANONICAL_NAMES = {"Spotify", "VLC", "Windows Media Player", "iTunes", "YouTube Music"}
+
+
+def _try_codeswitch_routing(source_text, parser_candidate, language):
+    """Tier 1.5: Code-switch shortcut — dictionary/token match for mixed-language
+
+    "verb + entity" utterances (e.g. "افتح Chrome", "زود volume") that resolve
+    in well under the embedding model's latency, before the semantic tier runs.
+
+    Only runs when:
+    - CODESWITCH_ROUTER_ENABLED is True
+    - parser_candidate is LLM_QUERY (regex didn't match)
+    - nlp.code_switch_router.try_codeswitch is available
+
+    Returns (ParsedCommand, meta_dict) or (None, meta_dict).
+    """
+    meta = {"codeswitch_used": False, "codeswitch_accepted": False}
+
+    intent = str(getattr(parser_candidate, "intent", "") or "").strip().upper()
+    if intent != "LLM_QUERY":
+        return None, meta
+    if not CODESWITCH_ROUTER_ENABLED or _try_codeswitch is None:
+        return None, meta
+
+    meta["codeswitch_used"] = True
+    try:
+        parsed = _try_codeswitch(source_text, language)
+    except Exception as exc:
+        logger.warning("Code-switch routing failed: %s", exc)
+        return None, meta
+
+    if parsed is None:
+        return None, meta
+
+    meta["codeswitch_accepted"] = True
+    meta["codeswitch_intent"] = str(getattr(parsed, "intent", "") or "")
+    return parsed, meta
+
+
+def _try_semantic_routing(source_text, parser_candidate):
+    """Tier 2: Semantic embedding similarity for paraphrase-tolerant intent matching.
+
+    Only runs when:
+    - SEMANTIC_ROUTER_ENABLED is True
+    - parser_candidate is LLM_QUERY (regex didn't match)
+    - _classify_semantic_topk is available (sentence-transformers installed)
+
+    Requires both the top score >= SEMANTIC_MIN_CONFIDENCE and a margin over the
+    runner-up >= SEMANTIC_MIN_MARGIN; a high score with too-small a margin is
+    surfaced as ambiguous (meta["semantic_ambiguous"]) rather than executed.
+
+    Returns (ParsedCommand, meta_dict) or (None, meta_dict).
+    """
+    meta = {
+        "semantic_used": False,
+        "semantic_accepted": False,
+        "semantic_intent": "",
+        "semantic_confidence": 0.0,
+        "semantic_top_3": [],
+        "semantic_ambiguous": False,
+    }
+
+    intent = str(getattr(parser_candidate, "intent", "") or "").strip().upper()
+    if intent != "LLM_QUERY":
+        return None, meta
+    if not SEMANTIC_ROUTER_ENABLED or _classify_semantic_topk is None:
+        return None, meta
+    if _is_semantic_router_ready is None or not _is_semantic_router_ready():
+        meta["semantic_pending"] = True
+        return None, meta
+
+    meta["semantic_used"] = True
+    try:
+        topk = _classify_semantic_topk(source_text, k=SEMANTIC_TOPK)
+    except Exception as exc:
+        logger.warning("Semantic routing failed: %s", exc)
+        return None, meta
+
+    if not topk:
+        return None, meta
+
+    meta["semantic_top_3"] = [(name, round(float(score), 4)) for name, score in topk]
+
+    semantic_intent, confidence = topk[0]
+    second_score = float(topk[1][1]) if len(topk) > 1 else 0.0
+    margin = float(confidence) - second_score
+    meta["semantic_intent"] = semantic_intent
+    meta["semantic_confidence"] = float(confidence)
+
+    threshold = max(
+        float(SEMANTIC_ROUTER_CONFIDENCE_THRESHOLD),
+        float(SEMANTIC_MIN_CONFIDENCE),
+        float(_nlu_threshold_for_intent(semantic_intent)),
+    )
+    if confidence < threshold or semantic_intent == "LLM_QUERY":
+        return None, meta
+
+    if margin < float(SEMANTIC_MIN_MARGIN):
+        # Best score clears the confidence bar but is too close to the runner-up
+        # to trust — surface as ambiguous instead of guessing (Phases 5/6 consume it).
+        meta["semantic_ambiguous"] = True
+        meta["semantic_candidates"] = meta["semantic_top_3"][:2]
+        return None, meta
+
+    # Re-parse through the regex parser with the semantic intent as a hint.
+    # This lets the regex parser extract structured args (app_name, action_key, etc.)
+    # while the semantic router provides the intent classification.
+    reparsed = parse_command(source_text)
+    reparsed_intent = str(getattr(reparsed, "intent", "") or "").strip().upper()
+
+    # If the regex parser already found a non-LLM intent, prefer its structured result
+    if reparsed_intent != "LLM_QUERY" and reparsed_intent == semantic_intent:
+        meta["semantic_accepted"] = True
+        return reparsed, meta
+
+    # Build a ParsedCommand from the semantic intent with args from parser
+    normalized = " ".join(str(source_text or "").lower().split()).strip()
+    args = dict(reparsed.args or {}) if reparsed_intent == semantic_intent else {}
+    action = reparsed.action if reparsed_intent == semantic_intent else ""
+
+    # When semantic intent is an app open/close but regex couldn't extract a
+    # structured app_name (filler words, code-switching, mid-sentence app name),
+    # scan the source text against the known app catalog.
+    if semantic_intent in {"OS_APP_OPEN", "OS_APP_CLOSE"} and not args.get("app_name"):
+        extracted = _extract_app_name_from_text(source_text)
+        if extracted:
+            args["app_name"] = extracted
+
+    parsed = ParsedCommand(
+        intent=semantic_intent,
+        raw=source_text,
+        normalized=normalized,
+        action=action,
+        args=args,
+    )
+    meta["semantic_accepted"] = True
+    return parsed, meta
+
+
+_KEYWORD_NLP_MIN_CONFIDENCE = 0.45
+_KEYWORD_NLP_SEARCH_PREFIX_RE = re.compile(
+    r"^(?:search|find|look\s+up|google|دور|دوّر|دورلي|دوّرلي|ابحث)(?:\s+(?:for|about|on|in|عن|على|في))?\s+",
+    re.IGNORECASE,
+)
+_KEYWORD_NLP_SEARCH_WEB_PREFIX_RE = re.compile(
+    r"^(?:the\s+)?(?:web|internet|online|الويب|النت)\s*(?:for|about|عن)?\s+",
+    re.IGNORECASE,
+)
+_KEYWORD_NLP_URL_INTENT_MAP = {
+    "open_youtube": "https://www.youtube.com",
+    "open_google": "https://www.google.com",
+}
+_KEYWORD_NLP_URL_INTENT_REQUIRED_MARKERS = {
+    "open_google": {"google", "جوجل"},
+    "open_youtube": {"youtube", "you tube", "yt", "يوتيوب", "يوتوب"},
+}
+_KEYWORD_NLP_APP_OPEN_INTENT_MAP = {
+    "play_music": "spotify",
+    "open_spotify": "spotify",
+    "open_chrome": "chrome",
+    "open_calculator": "calculator",
+}
+_KEYWORD_NLP_SYSTEM_ACTION_INTENT_MAP = {
+    "volume_up": "volume_up",
+    "volume_down": "volume_down",
+    "wifi_on": "wifi_on",
+    "wifi_off": "wifi_off",
+    "bluetooth_on": "bluetooth_on",
+    "bluetooth_off": "bluetooth_off",
+    "screenshot": "screenshot",
+}
+_KEYWORD_NLP_SCREENSHOT_EXPLICIT_MARKERS = {
+    "screenshot",
+    "screen shot",
+    "screen",
+    "سكرين",
+    "سكرينشوت",
+    "سكرين شوت",
+    "شاشه",
+    "شاشة",
+    "الشاشه",
+    "الشاشة",
+    "لقطه شاشه",
+    "لقطة شاشة",
+    "صوره شاشة",
+    "صورة شاشة",
+    "صوره للشاشه",
+    "صورة للشاشة",
+}
+_KEYWORD_NLP_INFORMATIONAL_QUERY_MARKERS = {
+    # Generic question stems — informational queries should NEVER be hijacked
+    # by fuzzy-matched app-open / URL intents.
+    "tell me",
+    "tell me about",
+    "what is",
+    "what's",
+    "what are",
+    "who is",
+    "who's",
+    "who are",
+    "where is",
+    "where are",
+    "when is",
+    "when did",
+    "when was",
+    "why is",
+    "why are",
+    "how is",
+    "how are",
+    "how does",
+    "how do",
+    "explain",
+    "describe",
+    "define",
+    "احكيلي",
+    "اخبرني",
+    "اخبرنى",
+    "أخبرني",
+    "خبرني",
+    "حدثني",
+    "حدّثني",
+    "اشرح",
+    "اشرحلي",
+    "اشرح لي",
+    "قولي",
+    "قوللي",
+    "عاوزك تقولي",
+    "اعرفني",
+    "ابعتلي",
+    "وضحلي",
+    "فهملي",
+    "ايه هو",
+    "ايه هي",
+    "إيه هو",
+    "إيه هي",
+    "مين هو",
+    "مين هي",
+    "ما هو",
+    "ما هي",
+    "ماذا",
+    "كيف",
+    "ليش",
+    "لماذا",
+    # Weather / news / price markers (existing)
+    "weather",
+    "forecast",
+    "temperature",
+    "news",
+    "headline",
+    "price",
+    "prices",
+    "gold price",
+    "gold prices",
+    "سعر",
+    "اسعار",
+    "أسعار",
+    "ذهب",
+    "دهب",
+    "النهارده",
+    "النهاردة",
+    "today",
+    "في مصر",
+    "in egypt",
+    "اخبار",
+    "أخبار",
+    "الجو",
+    "طقس",
+}
+
+
+def _extract_keyword_nlp_search_query(source_text):
+    value = " ".join(str(source_text or "").split()).strip()
+    if not value:
+        return ""
+
+    value = _KEYWORD_NLP_SEARCH_PREFIX_RE.sub("", value, count=1).strip()
+    value = _KEYWORD_NLP_SEARCH_WEB_PREFIX_RE.sub("", value, count=1).strip()
+    value = value.strip(" .,!?؟،")
+    return value
+
+
+def _has_keyword_nlp_screenshot_marker(source_text, matched_keywords):
+    normalized_text = " ".join(str(source_text or "").lower().split()).strip()
+    if not normalized_text:
+        return False
+
+    if any(marker in normalized_text for marker in _KEYWORD_NLP_SCREENSHOT_EXPLICIT_MARKERS):
+        return True
+
+    for keyword in matched_keywords:
+        normalized_keyword = " ".join(str(keyword or "").lower().split()).strip()
+        if not normalized_keyword:
+            continue
+        if any(marker in normalized_keyword for marker in _KEYWORD_NLP_SCREENSHOT_EXPLICIT_MARKERS):
+            return True
+    return False
+
+
+def _looks_keyword_nlp_informational_query(source_text):
+    if _looks_like_explanatory_llm_query(source_text):
+        return True
+    normalized_text = " ".join(str(source_text or "").lower().split()).strip()
+    if not normalized_text:
+        return False
+
+    if any(marker in normalized_text for marker in _WEATHER_QUERY_MARKERS):
+        return True
+    if any(marker in normalized_text for marker in _NEWS_QUERY_MARKERS):
+        return True
+    return any(marker in normalized_text for marker in _KEYWORD_NLP_INFORMATIONAL_QUERY_MARKERS)
+
+
+def _map_keyword_nlp_intent_to_command(source_text, nlp_result):
+    intent_name = str((nlp_result or {}).get("intent") or "").strip().lower()
+    if intent_name in {"", "unknown"}:
+        return None
+
+    try:
+        confidence = float((nlp_result or {}).get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < _KEYWORD_NLP_MIN_CONFIDENCE:
+        return None
+
+    matched_keywords = list((nlp_result or {}).get("matched_keywords") or [])
+
+    if intent_name == "screenshot" and not _has_keyword_nlp_screenshot_marker(source_text, matched_keywords):
+        return None
+
+    normalized = " ".join(str(source_text or "").lower().split()).strip()
+
+    # Informational queries ("tell me about X", "what is Y", "احكيلي", etc.) must
+    # never be hijacked by fuzzy-matched app/URL intents — those go to LLM/search.
+    is_informational = _looks_keyword_nlp_informational_query(source_text)
+
+    target_url = _KEYWORD_NLP_URL_INTENT_MAP.get(intent_name)
+    if target_url:
+        if is_informational:
+            return None
+        # Require the target keyword to appear in the user's actual source text.
+        # The matched_keywords list can contain fuzzy matches (e.g. "you tube"
+        # matched against the word "you" in "Can you tell me..."), so trusting
+        # it as a fallback lets unrelated questions hijack the URL launcher.
+        required_markers = set(_KEYWORD_NLP_URL_INTENT_REQUIRED_MARKERS.get(intent_name) or set())
+        if required_markers and not any(marker in normalized for marker in required_markers):
+            return None
+        return ParsedCommand(
+            intent="OS_SYSTEM_COMMAND",
+            raw=source_text,
+            normalized=normalized,
+            args={"action_key": "browser_open_url", "url": target_url},
+        )
+
+    app_name = _KEYWORD_NLP_APP_OPEN_INTENT_MAP.get(intent_name)
+    if app_name:
+        if is_informational:
+            return None
+        return ParsedCommand(
+            intent="OS_APP_OPEN",
+            raw=source_text,
+            normalized=normalized,
+            args={"app_name": app_name},
+        )
+
+    action_key = _KEYWORD_NLP_SYSTEM_ACTION_INTENT_MAP.get(intent_name)
+    if action_key:
+        if _looks_keyword_nlp_informational_query(source_text):
+            return None
+        # Require higher confidence for system commands via keyword NLP
+        # to prevent false positives like "RISK" fuzzy-matching to "raise" → volume_up
+        if confidence < 0.65:
+            logger.debug(
+                "Fuzzy keyword match for system command too low (%.2f < 0.65): '%s' (intent=%s, keywords=%s)",
+                confidence,
+                str(source_text)[:50],
+                intent_name,
+                matched_keywords
+            )
+            return None
+        return ParsedCommand(
+            intent="OS_SYSTEM_COMMAND",
+            raw=source_text,
+            normalized=normalized,
+            args={"action_key": action_key},
+        )
+
+    if intent_name == "search":
+        query = _extract_keyword_nlp_search_query(source_text)
+        if not query:
+            return None
+        return ParsedCommand(
+            intent="OS_SYSTEM_COMMAND",
+            raw=source_text,
+            normalized=normalized,
+            args={"action_key": "browser_search_web", "search_query": query},
+        )
+
+    return None
+
+
+def _try_keyword_nlp_routing(source_text, parser_candidate):
+    meta = {
+        "nlp_used": False,
+        "nlp_accepted": False,
+        "nlp_intent": "",
+        "nlp_confidence": 0.0,
+        "nlp_matched_keywords": [],
+    }
+
+    intent = str(getattr(parser_candidate, "intent", "") or "").strip().upper()
+    if intent != "LLM_QUERY" or _classify_keyword_intent is None:
+        return None, meta
+
+    meta["nlp_used"] = True
+    try:
+        nlp_result = dict(_classify_keyword_intent(source_text) or {})
+    except Exception as exc:
+        logger.warning("Keyword NLP routing failed: %s", exc)
+        return None, meta
+
+    meta["nlp_intent"] = str(nlp_result.get("intent") or "").strip().lower()
+    try:
+        meta["nlp_confidence"] = float(nlp_result.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        meta["nlp_confidence"] = 0.0
+    meta["nlp_matched_keywords"] = list(nlp_result.get("matched_keywords") or [])
+
+    mapped = _map_keyword_nlp_intent_to_command(source_text, nlp_result)
+    if mapped is not None:
+        meta["nlp_accepted"] = True
+    return mapped, meta
+
+
+_CLARIFICATION_PREVENTED_REASONS = {
+    "app_name_ambiguous",
+    "app_close_ambiguous",
+    "file_search_multiple_matches",
+    "open_target_ambiguous",
+    "low_entity_confidence",
+    "multiple_actions_detected",
+}
+
+_POST_CLARIFICATION_CORRECTION_MARKERS_EN = {
+    "wrong",
+    "not that",
+    "no that one",
+    "different one",
+    "other one",
+    "not this",
+    "incorrect",
+}
+
+_POST_CLARIFICATION_CORRECTION_MARKERS_AR = {
+    "غلط",
+    "لا هذا",
+    "لا ده",
+    "مش هذا",
+    "مش ده",
+    "غيره",
+    "غير هذا",
+    "خطا",
+    "خطأ",
+}
+
+_SENSITIVE_SYSTEM_ACTION_KEYS = {
+    "shutdown",
+    "restart",
+    "logoff",
+    "sleep",
+    "lock",
+    "empty_recycle_bin",
+}
+
+
+def _clarification_intent_from_payload(payload):
+    options = list((payload or {}).get("options") or [])
+    if options:
+        intent = str((options[0] or {}).get("intent") or "").strip().upper()
+        if intent:
+            return intent
+    return "INTENT_CLARIFICATION"
+
+
+def _is_wrong_action_prevented_reason(reason):
+    return str(reason or "").strip().lower() in _CLARIFICATION_PREVENTED_REASONS
+
+
+def _is_sensitive_command(parsed):
+    intent = str(getattr(parsed, "intent", "") or "").strip().upper()
+    action = str(getattr(parsed, "action", "") or "").strip().lower()
+    args = dict(getattr(parsed, "args", {}) or {})
+
+    if intent == "OS_CONFIRMATION":
+        return True
+
+    if intent == "OS_APP_CLOSE":
+        return True
+
+    if intent == "OS_FILE_NAVIGATION" and action in {
+        "delete_item",
+        "delete_item_permanent",
+        "move_item",
+        "rename_item",
+    }:
+        return True
+
+    if intent == "OS_SYSTEM_COMMAND":
+        action_key = str(args.get("action_key") or "").strip().lower()
+        if action_key in _SENSITIVE_SYSTEM_ACTION_KEYS:
+            return True
+
+    return False
+
+
+def _looks_like_post_clarification_correction(text, language="en"):
+    normalized = _normalize_compact(text)
+    if not normalized:
+        return False
+
+    markers = (
+        _POST_CLARIFICATION_CORRECTION_MARKERS_AR
+        if str(language or "").strip().lower() == "ar"
+        else _POST_CLARIFICATION_CORRECTION_MARKERS_EN
+    )
+    if any(marker in normalized for marker in markers):
+        return True
+
+    # Keep a tiny language-agnostic fallback for mixed phrases.
+    if "wrong" in normalized or "غلط" in normalized:
+        return True
+    return False
+
+
+def _find_preferred_clarification_option(payload):
+    payload_dict = dict(payload or {})
+    reason = str(payload_dict.get("reason") or "").strip()
+    source_text = str(payload_dict.get("source_text") or "").strip()
+    language = str(payload_dict.get("language") or "en").strip().lower()
+    options = list(payload_dict.get("options") or [])
+    if not reason or not source_text or not options:
+        return None
+
+    preference = session_memory.get_clarification_choice(
+        reason,
+        source_text,
+        language=language,
+        max_age_seconds=CLARIFICATION_PREFERENCE_MAX_AGE_SECONDS,
+    )
+    if not preference:
+        return None
+
+    pref_id = str(preference.get("id") or "").strip()
+    pref_intent = str(preference.get("intent") or "").strip()
+    pref_action = str(preference.get("action") or "").strip()
+    pref_args = dict(preference.get("args") or {})
+
+    for option in options:
+        option_args = dict(option.get("args") or {})
+        if pref_id and str(option.get("id") or "").strip() == pref_id:
+            return option
+        if pref_intent and str(option.get("intent") or "").strip() != pref_intent:
+            continue
+        if pref_action and str(option.get("action") or "").strip() != pref_action:
+            continue
+        if pref_args:
+            matches = True
+            for key, value in pref_args.items():
+                if str(option_args.get(key) or "").strip().lower() != str(value or "").strip().lower():
+                    matches = False
+                    break
+            if matches:
+                return option
+
+    return None
+
+_OPEN_FOLLOWUP_TEXTS = {
+    "open it",
+    "open this",
+    "open that",
+    "launch it",
+    "start it",
+    "افتحه",
+    "افتحها",
+    "افتحه الان",
+    "افتحها الان",
+    "شغله",
+    "شغلها",
+}
+
+_CONTINUE_FOLLOWUP_TEXTS = {
+    "continue",
+    "continue please",
+    "keep going",
+    "keep going please",
+    "go on",
+    "go on please",
+    "resume",
+    "resume it",
+    "continue the answer",
+    "continue the topic",
+    "continue the conversation",
+    "continue previous",
+    "continue previous conversation",
+    "continue on the same topic",
+    "keep talking",
+    "proceed",
+    "تابع",
+    "تابع الكلام",
+    "تابع الشرح",
+    "كمل",
+    "كمّل",
+    "كمل على نفس الموضوع",
+    "كمل على نفس الكلام",
+    "كمل الموضوع",
+    "ماشي كمل",
+    "استمر",
+    "استمر في الكلام",
+    "استمر على نفس الموضوع",
+}
+
+_CLOSE_FOLLOWUP_TEXTS = {
+    "close it",
+    "close this",
+    "close that",
+    "terminate it",
+    "kill it",
+    "اقفله",
+    "اقفلها",
+    "اقفلهم",
+    "سكره",
+    "سكرها",
+}
+
+_DELETE_FOLLOWUP_TEXTS = {
+    "delete it",
+    "delete this",
+    "delete that",
+    "remove it",
+    "remove this",
+    "امسحه",
+    "امسحها",
+    "شيله",
+    "شيلها",
+}
+
+_DELETE_VAGUE_FOLLOWUP_TEXTS = {
+    "delete it",
+    "delete this",
+    "delete that",
+    "remove it",
+    "remove this",
+    "امسحه",
+    "امسحها",
+    "شيله",
+    "شيلها",
+}
+
+_OPEN_LAST_APP_FOLLOWUP_TEXTS = {
+    "open the app",
+    "open same app",
+    "open that app",
+    "افتح البرنامج",
+    "افتح نفس البرنامج",
+}
+
+_OPEN_LAST_FILE_FOLLOWUP_TEXTS = {
+    "open the file",
+    "open same file",
+    "open that file",
+    "open this file",
+    "افتح الملف",
+    "افتح نفس الملف",
+}
+
+_CLOSE_LAST_APP_FOLLOWUP_TEXTS = {
+    "close the app",
+    "close same app",
+    "close that app",
+    "اقفل البرنامج",
+    "سكر البرنامج",
+    "سكرلي البرنامج",
+}
+
+_DELETE_LAST_FILE_FOLLOWUP_TEXTS = {
+    "delete the file",
+    "delete same file",
+    "delete that file",
+    "remove the file",
+    "امسح الملف",
+    "شيل الملف",
+}
+
+_OPEN_BOTH_FOLLOWUP_TEXTS = {
+    "open both",
+    "open both of them",
+    "open them both",
+    "افتح الاثنين",
+    "افتحهم",
+    "افتحهم الاثنين",
+}
+
+_CLOSE_BOTH_FOLLOWUP_TEXTS = {
+    "close both",
+    "close both of them",
+    "close them",
+    "close them both",
+    "اقفل الاثنين",
+    "اقفلهم",
+    "سكرهم",
+}
+
+_YES_CONFIRM_FOLLOWUP_TEXTS = {
+    "yes",
+    "yes please",
+    "ok",
+    "okay",
+    "go ahead",
+    "proceed",
+    "do it",
+    "confirm it",
+    "approve it",
+    "نعم",
+    "ايوه",
+    "أيوه",
+    "تمام",
+    "اوكي",
+    "أوكي",
+    "نفذ",
+    "نفذه",
+    "نفذها",
+}
+
+_NO_CANCEL_FOLLOWUP_TEXTS = {
+    "no",
+    "no thanks",
+    "dont",
+    "don't",
+    "stop",
+    "never mind",
+    "nevermind",
+    "cancel it",
+    "لا",
+    "لا شكرا",
+    "بلاش",
+    "لا تنفذ",
+    "لا تنفذه",
+    "لا تنفذها",
+}
+
+_CONFIRM_FOLLOWUP_TEXTS = {
+    "confirm",
+    "confirm it",
+    "confirm this",
+    "confirm that",
+    "approve",
+    "approve it",
+    "اكد",
+    "أكد",
+    "تاكيد",
+    "تأكيد",
+    "اكده",
+    "أكده",
+}
+
+_CANCEL_FOLLOWUP_TEXTS = {
+    "cancel",
+    "cancel it",
+    "cancel this",
+    "cancel that",
+    "abort",
+    "abort it",
+    "stop it",
+    "الغي",
+    "الغيها",
+    "الغيه",
+    "سيبها",
+}
+
+_RENAME_IT_TO_RE = re.compile(r"^\s*(?:rename|change\s+name)\s+(?:it|this|that)\s+to\s+(.+)$", re.IGNORECASE)
+_MOVE_IT_TO_RE = re.compile(r"^\s*(?:move)\s+(?:it|this|that)\s+to\s+(.+)$", re.IGNORECASE)
+_CONFIRM_IT_WITH_FACTOR_RE = re.compile(
+    r"^\s*(?:confirm|approve)\s+(?:it|this|that)\s+(.+)$",
+    re.IGNORECASE,
+)
+_AR_RENAME_IT_TO_RE = re.compile(
+    r"^\s*(?:غيره|غيرها|سميه|سميها|سمّيه|سمّيها)\s+(?:ل)\s+(.+)$",
+    re.IGNORECASE,
+)
+_AR_MOVE_IT_TO_RE = re.compile(
+    r"^\s*(?:انقله|انقلها|حركه|حركها|وديه|وديها)\s+(?:على)\s+(.+)$",
+    re.IGNORECASE,
+)
+_AR_CONFIRM_IT_WITH_FACTOR_RE = re.compile(
+    r"^\s*(?:اكدها|أكدها|اكده|أكده|اكد|أكد)\s+(.+)$",
+    re.IGNORECASE,
+)
+_YES_WITH_FACTOR_RE = re.compile(
+    r"^\s*(?:yes|ok(?:ay)?|go\s+ahead|proceed|do\s+it)\s+(.+)$",
+    re.IGNORECASE,
+)
+_AR_YES_WITH_FACTOR_RE = re.compile(
+    r"^\s*(?:نعم|ايوه|أيوه|تمام|اوكي|أوكي|نفذ|نفذه|نفذها)\s+(.+)$",
+    re.IGNORECASE,
+)
+
+_URGENT_MARKERS_EN = {
+    "now",
+    "right now",
+    "quickly",
+    "asap",
+    "immediately",
+    "urgent",
+}
+
+_URGENT_MARKERS_AR = {
+    "الان",
+    "حالا",
+    "فورا",
+    "بسرعة",
+    "حالاً",
+    "سريعا",
+}
+
+_POLITE_MARKERS_EN = {
+    "please",
+    "kindly",
+}
+
+_POLITE_MARKERS_AR = {
+    "من فضلك",
+    "لو سمحت",
+    "رجاء",
+    "رجاءا",
+}
+
+_RESPONSE_MODE_EXPLAIN_ON_MARKERS = {
+    "explain mode",
+    "explain mode on",
+    "enable explain mode",
+    "turn on explain mode",
+    "فعل وضع الشرح",
+    "شغل وضع الشرح",
+    "وضع الشرح",
+}
+
+_RESPONSE_MODE_EXPLAIN_OFF_MARKERS = {
+    "explain mode off",
+    "disable explain mode",
+    "turn off explain mode",
+    "الغي وضع الشرح",
+    "اقفل وضع الشرح",
+}
+
+_RESPONSE_MODE_CONCISE_ON_MARKERS = {
+    "concise mode",
+    "concise mode on",
+    "enable concise mode",
+    "turn on concise mode",
+    "brief mode",
+    "short mode",
+    "فعل الوضع المختصر",
+    "شغل الوضع المختصر",
+    "وضع مختصر",
+}
+
+_RESPONSE_MODE_CONCISE_OFF_MARKERS = {
+    "concise mode off",
+    "disable concise mode",
+    "turn off concise mode",
+    "الغي الوضع المختصر",
+    "اقفل الوضع المختصر",
+}
+
+_RESPONSE_MODE_DEFAULT_MARKERS = {
+    "default mode",
+    "normal mode",
+    "reset mode",
+    "الوضع الافتراضي",
+    "الوضع العادي",
+}
+
+_UNCLEAR_QUERY_CLARIFICATION_REPLY_TOKENS = {
+    "1",
+    "2",
+    "3",
+    "yes",
+    "no",
+    "cancel",
+    "show",
+    "more",
+    "first",
+    "second",
+    "third",
+    "this",
+    "that",
+    "نعم",
+    "لا",
+    "الغي",
+    "الاول",
+    "الأول",
+    "الثاني",
+    "الثالث",
+    "هذا",
+    "هذه",
+    "ذاك",
+    "more",
+}
+
+_UNCLEAR_QUERY_SUBSTANTIVE_MARKERS = {
+    "what",
+    "why",
+    "how",
+    "when",
+    "where",
+    "who",
+    "explain",
+    "tell me",
+    "about",
+    "search",
+    "open",
+    "close",
+    "كيف",
+    "لماذا",
+    "ماذا",
+    "اشرح",
+    "اشرح لي",
+    "اخبرني",
+    "خبرني",
+    "عن",
+    "دور",
+    "افتح",
+    "اقفل",
+}
+
+
+def _looks_substantive_unclear_query_followup(text):
+    normalized = _normalize_compact(text)
+    if not normalized:
+        return False
+
+    words = re.findall(r"[a-z0-9\u0600-\u06FF]+", normalized)
+    if not words:
+        return False
+
+    if normalized in _UNCLEAR_QUERY_CLARIFICATION_REPLY_TOKENS:
+        return False
+
+    reply_tokens = set(words)
+    if reply_tokens and reply_tokens.issubset(_UNCLEAR_QUERY_CLARIFICATION_REPLY_TOKENS):
+        return False
+
+    if len(words) >= 5:
+        return True
+
+    if len(words) >= 3 and any(marker in normalized for marker in _UNCLEAR_QUERY_SUBSTANTIVE_MARKERS):
+        return True
+
+    if "?" in str(text or "") and len(words) >= 3:
+        return True
+
+    return False
+
+
+def _should_bypass_pending_clarification(parsed, pending_payload=None, source_text=""):
+    if not parsed:
+        return False
+    intent = str(getattr(parsed, "intent", "") or "").strip().upper()
+    action = str(getattr(parsed, "action", "") or "").strip().lower()
+    if intent == "MEMORY_COMMAND" and action == "set_language":
+        return True
+
+    pending_reason = _normalize_compact((pending_payload or {}).get("reason") or "")
+
+    # A new high-confidence OS command always bypasses a stale file-search
+    # clarification — unless it looks like a pick-by-number reply ("افتح الأول",
+    # "افتح رقم 1") which resolve_clarification_reply handles better.
+    if (
+        pending_reason in {"file_search_multiple_matches", "file_delete_ambiguous_target"}
+        and intent in {
+            "OS_FILE_NAVIGATION", "OS_FILE_SEARCH", "OS_APP_OPEN", "OS_APP_CLOSE",
+            "OS_SYSTEM_COMMAND", "OS_PIN_CONFIRM",
+        }
+    ):
+        # Ordinal/number/pronoun pick disguised as a real command — let the
+        # clarification resolver handle it rather than treating it as a new command.
+        # Covers: "افتح الأول", "Open number one", "open it", "افتح ده"
+        if pending_reason == "file_search_multiple_matches":
+            args = getattr(parsed, "args", None) or {}
+            if intent == "OS_FILE_NAVIGATION":
+                candidate = _normalize_compact(str(args.get("path") or ""))
+            elif intent == "OS_APP_OPEN":
+                candidate = _normalize_compact(str(args.get("app_name") or ""))
+            else:
+                candidate = ""
+            if candidate:
+                # Pure ordinal/number pick: "number one", "رقم 1", "اول واحد", "3"
+                # Also matches bare "number" / "رقم" (STT sometimes truncates the digit).
+                _ordinal_words = re.compile(
+                    r"^(?:"
+                    # bare prefix alone — STT cut off the digit
+                    r"number|رقم"
+                    r"|(?:number|رقم|the|ال)?\s*"
+                    r"(?:\d+|الاول|اول|الثاني|ثاني|الثالث|ثالث|"
+                    r"first|second|third|one|two|three|"
+                    r"واحد|اتنين|تلاتة)"
+                    r"(?:\s+(?:\d+|الاول|اول|الثاني|ثاني|واحد|اتنين|تلاتة|"
+                    r"one|two|three|first|second|third))*"
+                    r")$",
+                    re.IGNORECASE | re.UNICODE,
+                )
+                if _ordinal_words.match(candidate):
+                    return False
+                # Short pronoun reference: "it", "this", "that", "ده", "دي"
+                _pronoun_words = {
+                    "it", "this", "that", "this one", "that one",
+                    "ده", "دي", "دا", "هو", "هي", "ده ده",
+                }
+                if candidate in _pronoun_words:
+                    return False
+        return True
+
+    if pending_reason != "low_confidence_unclear_query":
+        return False
+
+    # For short/noisy unresolved queries, treat a substantive new utterance as a fresh request
+    # instead of forcing the user to stay in stale clarification mode.
+    if intent and intent != "LLM_QUERY":
+        return True
+
+    return _looks_substantive_unclear_query_followup(source_text)
+
+# Maps intents to their required permission key.
+_PERMISSION_MAP = {
+    "OS_CONFIRMATION": "confirmation",
+    "OS_ROLLBACK": "rollback",
+    "OS_FILE_SEARCH": "file_search",
+    "OS_FILE_SEARCH_ADVANCED": "file_search",
+    "OS_APP_OPEN": "app_open",
+    "OS_APP_CLOSE": "app_close",
+    "OS_SYSTEM_COMMAND": "system_command",
+    "OS_FILE_NAVIGATION_BATCH": "file_write",
+    "METRICS_REPORT": "metrics",
+    "AUDIT_LOG_REPORT": "audit_log",
+    "AUDIT_VERIFY": "audit_log",
+    "AUDIT_RESEAL": "audit_log",
+    "POLICY_COMMAND": "policy",
+    "BATCH_COMMAND": "batch",
+    "SEARCH_INDEX_COMMAND": "search_index",
+    "JOB_QUEUE_COMMAND": "job_queue",
+    "PERSONA_COMMAND": "persona",
+    "VOICE_COMMAND": "speech",
+    "KNOWLEDGE_BASE_COMMAND": "knowledge_base",
+    "MEMORY_COMMAND": "memory",
+    "OBSERVABILITY_REPORT": "observability",
+}
+
+
+def _truncate_text(value, max_chars=180):
+    text = " ".join(str(value or "").split())
+    if len(text) > max_chars:
+        return text[: max_chars - 3] + "..."
+    return text
+
+
+def _normalize_compact(text):
+    return " ".join(str(text or "").lower().split()).strip()
+
+
+_OPINION_CACHE_CUES = (
+    "how do",
+    "why",
+    "explain",
+    "what do you think",
+    "opinion",
+    "should i",
+    "should we",
+    "هل",
+    "ليه",
+    "ازاي",
+    "إزاي",
+    "رأيك",
+)
+
+
+def _llm_cache_entry_type(query: str) -> str:
+    normalized = f" {_normalize_compact(query)} "
+    return "opinion" if any(cue in normalized for cue in _OPINION_CACHE_CUES) else "factual"
+
+
+def _llm_cache_ttl_seconds(entry_type: str) -> int:
+    if str(entry_type or "").strip().lower() == "opinion":
+        return max(1, int(LLM_RESPONSE_CACHE_TTL_OPINION_SECONDS or LLM_RESPONSE_CACHE_TTL_SECONDS or 300))
+    return max(1, int(LLM_RESPONSE_CACHE_TTL_FACTUAL_SECONDS or LLM_RESPONSE_CACHE_TTL_SECONDS or 3600))
+
+
+def _llm_cache_key(query: str, language: str, tier: str = "medium"):
+    normalized_query = _normalize_compact(query or "")
+    normalized_language = _normalize_compact(language or LLM_DEFAULT_LANGUAGE or "en")
+    normalized_tier = _normalize_compact(tier or "medium")
+    persona_profile = ""
+    if LLM_RESPONSE_CACHE_KEY_INCLUDES_PERSONA:
+        try:
+            persona_profile = _normalize_compact(persona_manager.get_profile())
+        except Exception:
+            persona_profile = ""
+    payload = "\x1f".join([normalized_query, normalized_language, persona_profile, normalized_tier])
+    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _cache_get_llm_response(query: str, language: str, tier: str = "medium"):
+    if not LLM_RESPONSE_CACHE_ENABLED:
+        return None
+
+    now = time.time()
+    key = _llm_cache_key(query, language, tier)
+    entry = _LLM_RESPONSE_CACHE.get(key)
+    if not entry:
+        _LLM_RESPONSE_CACHE_STATS["misses"] += 1
+        return None
+
+    cached_at = float(entry.get("cached_at") or 0.0)
+    ttl_seconds = _llm_cache_ttl_seconds(entry.get("type"))
+    if cached_at <= 0 or (now - cached_at) > ttl_seconds:
+        _LLM_RESPONSE_CACHE.pop(key, None)
+        _LLM_RESPONSE_CACHE_STATS["misses"] += 1
+        _LLM_RESPONSE_CACHE_STATS["evictions"] += 1
+        return None
+
+    _LLM_RESPONSE_CACHE.move_to_end(key)
+    _LLM_RESPONSE_CACHE_STATS["hits"] += 1
+    llm_logger.info("llm_response_cache cache_hit=true type=%s tier=%s", entry.get("type") or "factual", tier)
+    return str(entry.get("value") or "").strip()
+
+
+def _cache_put_llm_response(query: str, language: str, response: str, tier: str = "medium"):
+    if not LLM_RESPONSE_CACHE_ENABLED:
+        return
+
+    value = str(response or "").strip()
+    if not value:
+        return
+
+    entry_type = _llm_cache_entry_type(query)
+    key = _llm_cache_key(query, language, tier)
+    _LLM_RESPONSE_CACHE[key] = {
+        "cached_at": time.time(),
+        "language": _normalize_compact(language or "en"),
+        "tier": _normalize_compact(tier or "medium"),
+        "type": entry_type,
+        "value": value,
+    }
+    _LLM_RESPONSE_CACHE.move_to_end(key)
+    _LLM_RESPONSE_CACHE_STATS["stores"] += 1
+
+    max_size = max(16, int(LLM_RESPONSE_CACHE_MAX_SIZE or 256))
+    while len(_LLM_RESPONSE_CACHE) > max_size:
+        _LLM_RESPONSE_CACHE.popitem(last=False)
+        _LLM_RESPONSE_CACHE_STATS["evictions"] += 1
+
+
+def clear_llm_response_cache():
+    _LLM_RESPONSE_CACHE.clear()
+    _LLM_RESPONSE_CACHE_STATS.update({"hits": 0, "misses": 0, "stores": 0, "evictions": 0})
+
+
+def get_llm_response_cache_stats():
+    return {
+        "enabled": bool(LLM_RESPONSE_CACHE_ENABLED),
+        "size": len(_LLM_RESPONSE_CACHE),
+        "hits": int(_LLM_RESPONSE_CACHE_STATS["hits"]),
+        "misses": int(_LLM_RESPONSE_CACHE_STATS["misses"]),
+        "stores": int(_LLM_RESPONSE_CACHE_STATS["stores"]),
+        "evictions": int(_LLM_RESPONSE_CACHE_STATS["evictions"]),
+        "ttl_seconds": int(LLM_RESPONSE_CACHE_TTL_SECONDS or 600),
+        "ttl_factual_seconds": int(LLM_RESPONSE_CACHE_TTL_FACTUAL_SECONDS or 3600),
+        "ttl_opinion_seconds": int(LLM_RESPONSE_CACHE_TTL_OPINION_SECONDS or 300),
+        "max_size": int(LLM_RESPONSE_CACHE_MAX_SIZE or 256),
+    }
+
+
+def prime_llm_response_cache_async():
+    """Seed common short opener replies without blocking startup."""
+    if not LLM_RESPONSE_CACHE_ENABLED:
+        return None
+
+    def _worker():
+        started = time.perf_counter()
+        openers = [
+            ("hello", "en", "Hey — I'm here."),
+            ("hi", "en", "Hey — I'm here."),
+            ("how are you", "en", "I'm good and ready. What do you need?"),
+            ("اهلا", "ar", "أهلا، أنا معاك."),
+            ("أهلاً", "ar", "أهلا، أنا معاك."),
+            ("كيفك", "ar", "تمام، أنا معاك."),
+            ("ايه اخبارك", "ar", "تمام، أنا معاك."),
+        ]
+        tier = get_runtime_model_tier()
+        for query, language, response in openers:
+            try:
+                _cache_put_llm_response(query, language, response, tier)
+            except Exception:
+                continue
+        llm_logger.info(
+            "LLM response cache primed entries=%d in %.2fs",
+            len(openers),
+            time.perf_counter() - started,
+        )
+
+    thread = threading.Thread(target=_worker, name="jarvis-llm-cache-prime", daemon=True)
+    thread.start()
+    return thread
+
+
+def _normalize_quality_text(text):
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return ""
+    normalized = (
+        raw.replace("أ", "ا")
+        .replace("إ", "ا")
+        .replace("آ", "ا")
+        .replace("ى", "ي")
+        .replace("ؤ", "و")
+        .replace("ئ", "ي")
+    )
+    normalized = (
+        normalized.replace("أ", "ا")
+        .replace("إ", "ا")
+        .replace("آ", "ا")
+        .replace("ى", "ي")
+        .replace("ؤ", "و")
+        .replace("ئ", "ي")
+    )
+    normalized = re.sub(r"[^\w\s\u0600-\u06FF]", " ", normalized, flags=re.UNICODE)
+    return " ".join(normalized.split())
+
+
+_LOW_VALUE_LLM_REPLY_MARKERS = {
+    "i can help with that",
+    "i can certainly help with that",
+    "i am sorry",
+    "i m sorry",
+    "i m sorry but",
+    "i'm sorry",
+    "sorry but",
+    "please provide me with some information",
+    "do you have any other questions",
+    "let me know if you have any other questions",
+    "i cannot assist with that directly",
+    "i can t assist with that directly",
+    "i cannot help with that",
+    "i can t help with that",
+    "unable to help with that",
+    "provide current weather information",
+    "check a weather service",
+    "cannot provide current news",
+    "can t provide current news",
+    "check a reliable news source",
+    "بالطبع يمكنني",
+    "هل لديك اي اسئلة اخرى",
+    "هل هناك اي معلومات اخرى",
+    "مش هقدر اساعدك",
+    "مش اقدر اساعدك",
+    "اسف بس",
+    "مش هقدر اديك معلومات الطقس دلوقتي",
+    "مش اقدر اديك معلومات الطقس دلوقتي",
+    "اتأكد من خدمة الطقس",
+    "شوف خدمة طقس",
+    "سابحث عن احدث تحديثات الرصد الجوي",
+    "يمكنك متابعة المحادثة",
+    "بمجرد وجودها",
+    "اسف",
+    "آسف",
+    "مش هقدر أساعدك",
+    "مش اقدر اساعدك",
+    "مش قادر اساعدك",
+    "مش قادر أساعدك",
+    "مش هقدر أساعدك في",
+    "مقدرش اساعدك",
+    "مقدرش أساعدك",
+    "قولّي هدفك",
+    "قولي هدفك",
+    "اكتب هدفك",
+    "share your goal",
+}
+
+_CAREER_ADVICE_QUERY_MARKERS = {
+    "engineer",
+    "computer engineer",
+    "successful engineer",
+    "career",
+    "become successful",
+    "be better",
+    "مهندس",
+    "كمبيوتر",
+    "ناجح",
+    "شاطر",
+    "اكون",
+    "أكون",
+    "ابقى",
+    "أبقى",
+    "ازاي اعمل",
+    "إزاي أعمل",
+    "اعمل كده",
+    "أعمل كده",
+}
+
+_WEATHER_QUERY_MARKERS = {
+    "weather",
+    "temperature",
+    "forecast",
+    "rain",
+    "wind",
+    "humidity",
+    "what is the weather",
+    "طقس",
+    "الطقس",
+    "درجة الحرارة",
+    "حرارة",
+    "مطر",
+    "رياح",
+    "رطوبة",
+    "تنبؤ",
+    "اخبار الجو",
+    "أخبار الجو",
+    "الجو النهاردة",
+    "جو النهاردة",
+    "الجو ايه",
+    "الجو عامل ايه",
+    "حالة الجو",
+    "حاله الجو",
+}
+
+_CLOTHING_QUERY_MARKERS = {
+    "what should i wear",
+    "what to wear",
+    "wear today",
+    "clothes",
+    "clothing",
+    "jacket",
+    "coat",
+    "لبس",
+    "البس",
+    "ألبس",
+    "ملابس",
+    "جاكيت",
+    "معطف",
+}
+
+_NEWS_QUERY_MARKERS = {
+    "news",
+    "headline",
+    "headlines",
+    "breaking",
+    "today news",
+    "world news",
+    "اخبار",
+    "الأخبار",
+    "خبر",
+    "العناوين",
+    "عاجل",
+}
+
+_SPORTS_QUERY_MARKERS = {
+    # English
+    "match", "score", "fixture", "fixtures", "world cup", "tournament",
+    "league", "standings", "table", "result", "results", "kickoff",
+    "vs", "against", "qualifier", "qualifiers", "playing against",
+    # Arabic
+    "ماتش", "الماتش", "مباراة", "المباراة", "مباريات",
+    "كأس العالم", "كاس العالم", "بطولة", "الدوري", "ترتيب",
+    "نتيجة", "النتيجة", "نتائج", "مع مين", "هيلعب", "بيلعب",
+    "تأهل", "تصفيات", "جدول المباريات", "موعد المباراة",
+}
+
+_SEARCH_QUERY_MARKERS = {
+    # English price/money markers
+    "price of", "cost of", "how much", "stock", "exchange rate",
+    "tell me the price", "what's the price", "tell me about",
+    # Arabic price markers — singular AND plural forms (substring match needs both)
+    "سعر", "اسعار", "أسعار", "تكلفة", "كام سعر", "بكام", "كام",
+    "سوق", "بورصة",
+    # Commodity / currency keywords that almost always need live data
+    "ذهب", "دهب", "فضة", "عملة", "دولار", "يورو", "بيتكوين",
+    "gold", "silver", "bitcoin", "crypto",
+    # English question stems
+    "what is", "who is", "when did", "where is",
+    # Arabic question stems
+    "ايه هو", "ايه هي", "مين هو", "مين هي", "امتى", "فين",
+    # Note: "قولي"/"احكيلي"/"اعرفني"/"عاوزك تقولي" are informational markers,
+    # NOT search triggers — they belong in _KEYWORD_NLP_INFORMATIONAL_QUERY_MARKERS.
+    # Recency / "now" markers — strong signal for live-data queries
+    "latest", "recent", "new", "current", "today", "now", "currently",
+    "آخر", "أحدث", "جديد", "حالي",
+    "النهارده", "النهاردة", "اليوم", "دلوقتي",
+}
+
+_LIVE_DATA_FORCE_MARKERS = {
+    # Recency/time-sensitive cues
+    "latest", "recent", "current", "today", "now", "currently",
+    "آخر", "أحدث", "حالي", "النهارده", "النهاردة", "اليوم", "دلوقتي",
+    # Price/market cues
+    "price of", "cost of", "how much", "exchange rate", "stock",
+    "سعر", "اسعار", "أسعار", "تكلفة", "بكام", "كام",
+    # Commodity/currency cues
+    "gold", "silver", "bitcoin", "crypto", "دولار", "يورو", "ذهب", "دهب", "فضة", "عملة",
+}
+
+_NO_SEARCH_NEEDED_MARKERS = {
+    # Greetings / small talk
+    "hello", "hi", "hey", "good morning", "good evening", "good night",
+    "thanks", "thank you", "how are you", "what's up",
+    "ازيك", "إزيك", "ازيك يا", "صباح الخير", "مساء الخير", "تصبح على خير",
+    "شكرا", "شكراً", "متشكر", "ميرسي", "اخبارك ايه", "اخبارك إيه", "انت عامل ايه", "انت عامل إيه",
+    # Identity / persona questions about Jarvis itself — answer from persona, no search
+    "what's your name", "who are you", "what are you",
+    "مين انت", "انت مين", "اسمك ايه", "اسمك إيه",
+    # Farewell
+    "bye", "goodbye", "see you", "مع السلامة", "باي",
+}
+
+
+def _looks_like_no_search_needed(text):
+    """Queries that never benefit from a (parallel, 6s-timeout) web search.
+
+    Covers trivial chit-chat/persona small talk, and weather/clothing
+    questions — the latter already have a dedicated, faster weather-API path
+    (see _detect_weather_intent in tools/live_data.py), so forcing a generic
+    web search alongside it only adds latency without ever being used.
+    """
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return True
+    if _looks_weather_or_clothing_query(text):
+        return True
+    word_count = len(normalized.split())
+    if word_count > 6:
+        return False
+    return any(marker in normalized for marker in _NO_SEARCH_NEEDED_MARKERS)
+
+
+_QUESTION_PREFIXES_EN = (
+    "what",
+    "what's",
+    "whats",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "which",
+    "is",
+    "are",
+    "do",
+    "does",
+    "did",
+    "can",
+    "could",
+    "should",
+    "will",
+    "would",
+)
+
+_QUESTION_PREFIXES_AR = (
+    "ايه",
+    "اية",
+    "اي",
+    "مين",
+    "امتى",
+    "فين",
+    "ازاي",
+    "ليه",
+    "هل",
+    "كام",
+    "قد ايه",
+    "كم",
+    "متى",
+    "اين",
+    "أين",
+    "كيف",
+    "لماذا",
+    "ماذا",
+)
+
+_ASSIST_FIRST_REWRITE_BLOCK_MARKERS = {
+    "hack",
+    "exploit",
+    "malware",
+    "virus",
+    "ransomware",
+    "phishing",
+    "bomb",
+    "weapon",
+    "kill",
+    "suicide",
+    "self harm",
+    "self-harm",
+    "terror",
+    "ارهاب",
+    "إرهاب",
+    "متفجر",
+    "متفجرات",
+    "انتحار",
+    "ايذاء النفس",
+    "إيذاء النفس",
+    "قتل",
+}
+
+
+def _looks_low_value_llm_reply(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return True
+    word_count = len(normalized.split())
+    if word_count == 0:
+        return True
+    has_marker = any(_normalize_quality_text(marker) in normalized for marker in _LOW_VALUE_LLM_REPLY_MARKERS)
+    return has_marker and word_count <= 90
+
+
+def _looks_career_advice_query(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    return any(_normalize_quality_text(marker) in normalized for marker in _CAREER_ADVICE_QUERY_MARKERS)
+
+
+def _career_advice_fallback(language):
+    if normalize_language(language) == "ar":
+        return (
+            "ابدأ بالأساسيات: برمجة كويسة، هياكل بيانات، نظم تشغيل، شبكات، وقواعد بيانات. "
+            "بعد كده اختار مسار واحد، وابني مشاريع حقيقية عليه، وارفعها على GitHub، وخلّي حد شاطر يراجع شغلك كل فترة."
+        )
+    return (
+        "Start with fundamentals: programming, data structures, operating systems, networking, and databases. "
+        "Then pick one track, build real projects, put them on GitHub, and get regular feedback from stronger engineers."
+    )
+
+
+def _looks_weather_or_clothing_query(text):
+    raw_value = str(text or "")
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    arabic_weather_terms = (
+        "\u0637\u0642\u0633",
+        "\u0627\u0644\u0637\u0642\u0633",
+        "\u0627\u0644\u062c\u0648",
+        "\u0623\u062e\u0628\u0627\u0631 \u0627\u0644\u0637\u0642\u0633",
+        "\u0627\u062e\u0628\u0627\u0631 \u0627\u0644\u0637\u0642\u0633",
+        "\u0623\u062e\u0628\u0627\u0631 \u0627\u0644\u062c\u0648",
+        "\u0627\u062e\u0628\u0627\u0631 \u0627\u0644\u062c\u0648",
+        "\u062f\u0631\u062c\u0629 \u0627\u0644\u062d\u0631\u0627\u0631\u0629",
+    )
+    if any(term in raw_value or term in normalized for term in arabic_weather_terms):
+        return True
+    if any(marker in normalized for marker in _WEATHER_QUERY_MARKERS):
+        return True
+    return any(marker in normalized for marker in _CLOTHING_QUERY_MARKERS)
+
+
+def _looks_news_query(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _NEWS_QUERY_MARKERS)
+
+
+def _looks_sports_query(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _SPORTS_QUERY_MARKERS)
+
+
+def _is_assist_first_safe_request(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    return not any(marker in normalized for marker in _ASSIST_FIRST_REWRITE_BLOCK_MARKERS)
+
+
+def _looks_search_worthy_query(text):
+    """Check if a query would benefit from web search context."""
+    if _looks_like_explanatory_llm_query(text):
+        return False
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _SEARCH_QUERY_MARKERS)
+
+
+def _looks_live_data_trigger_query(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    # News/sports/price topics need live data even when phrased as "tell me ...";
+    # the explanatory-query guard below only protects advice/how-to questions,
+    # which never overlap with these factual/time-sensitive topics.
+    if _looks_news_query(normalized):
+        return True
+    if _looks_sports_query(normalized):
+        return True
+    return any(marker in normalized for marker in _LIVE_DATA_FORCE_MARKERS)
+
+
+def _looks_like_question(text):
+    normalized = _normalize_quality_text(text)
+    if not normalized:
+        return False
+    if normalized.endswith("?") or normalized.endswith("؟"):
+        return True
+    lowered = normalized.lower()
+    for prefix in _QUESTION_PREFIXES_EN:
+        if lowered == prefix or lowered.startswith(prefix + " "):
+            return True
+    for prefix in _QUESTION_PREFIXES_AR:
+        if lowered == prefix or lowered.startswith(prefix + " "):
+            return True
+    return False
+
+
+def _previous_turn_looks_live_data():
+    recent = session_memory.recent(limit=2)
+    if not recent:
+        return False
+    last_turn = recent[-1] if recent else {}
+    last_user = str(last_turn.get("user") or "").strip()
+    if not last_user:
+        return False
+    if _looks_weather_or_clothing_query(last_user):
+        return True
+    if _looks_news_query(last_user):
+        return True
+    return _looks_search_worthy_query(last_user)
+
+
+_pipeline_thread_local = threading.local()
+
+
+def inject_precomputed_live_context(context: str) -> None:
+    """Set pre-fetched live data for the current thread (called by ConcurrentPipeline)."""
+    _pipeline_thread_local.live_context = str(context or "")
+
+
+def clear_precomputed_live_context() -> None:
+    """Remove pre-fetched live data for the current thread after routing completes."""
+    try:
+        del _pipeline_thread_local.live_context
+    except AttributeError:
+        pass
+
+
+def looks_like_live_data_query(text: str) -> bool:
+    """Public wrapper so the orchestrator can detect live-data queries without importing private helpers."""
+    return bool(_looks_live_data_trigger_query(text))
+
+
+def _fetch_live_tool_context(query_text):
+    """Try to fetch live data (weather + web search) for the query.
+
+    Returns context string or empty. Uses Phase 2 live data pipeline.
+    """
+    # Use pre-fetched context injected by ConcurrentPipeline if available
+    precomputed = getattr(_pipeline_thread_local, "live_context", None)
+    if precomputed is not None:
+        return precomputed
+
+    # Default to always attempting a web search for substantive queries — small
+    # local models hallucinate confidently on anything fact-shaped (sports,
+    # prices, history, people, current events) instead of admitting they don't
+    # know. Searching first and letting the LLM decide whether the results are
+    # relevant mirrors how ChatGPT/Claude-style assistants behave, and avoids
+    # maintaining an ever-growing keyword list that misses new question types.
+    # Trivial chit-chat (greetings, thanks, identity questions) is excluded so
+    # we don't burn ~1-2s of search latency on turns that never need it.
+    force_search = bool(WEB_SEARCH_ENABLED) and not _looks_like_no_search_needed(query_text)
+
+    live_context = gather_live_data(query_text, parallel=True, force_search=force_search)
+    if live_context:
+        return live_context
+    
+    # Fallback: legacy direct weather fetch for immediate responses
+    from tools.weather import get_weather
+    if _looks_weather_or_clothing_query(query_text):
+        weather_data = get_weather()
+        if weather_data:
+            return weather_data
+
+    return ""
+
+
+def _extract_tool_block(tool_context: str, label: str) -> str:
+    text = str(tool_context or "").strip()
+    if not text:
+        return ""
+    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
+    target = f"[{label}]"
+    for block in blocks:
+        if block.startswith(target):
+            lines = block.splitlines()
+            if len(lines) <= 1:
+                return ""
+            return "\n".join(lines[1:]).strip()
+    return ""
+
+
+def _format_news_from_search(search_block: str, language: str) -> str:
+    lines = [line.strip() for line in str(search_block or "").splitlines() if line.strip()]
+    bullets = [line for line in lines if line.startswith("-")]
+    if not bullets:
+        return ""
+    top = bullets[:3]
+    if normalize_language(language) == "ar":
+        return "اهم العناوين حاليا:\n" + "\n".join(top)
+    return "Top headlines right now:\n" + "\n".join(top)
+
+
+_WEATHER_CONDITION_AR = {
+    "clear sky": "السما صافية",
+    "mainly clear": "الجو صافي في الغالب",
+    "partly cloudy": "الجو غائم جزئياً",
+    "overcast": "الجو ملبد بالغيوم",
+    "foggy": "فيه شبورة",
+    "light drizzle": "فيه رذاذ خفيف",
+    "moderate drizzle": "فيه رذاذ متوسط",
+    "slight rain": "فيه مطر خفيف",
+    "moderate rain": "فيه مطر متوسط",
+    "heavy rain": "فيه مطر غزير",
+    "thunderstorm": "فيه عواصف رعدية",
+}
+
+
+def _format_weather_direct_answer(weather_text, language):
+    text = " ".join(str(weather_text or "").split()).strip()
+    if not text:
+        return ""
+    target_language = normalize_language(language)
+    if text.startswith(("الطقس ", "Weather in ")):
+        # Already normalized by core.voice_normalizer / tools.live_data.
+        return normalize_for_voice(text, target_language)
+    match = re.search(
+        r"Weather in (?P<city>.*?): (?P<condition>.*?), (?P<temp>[-+]?\d+(?:\.\d+)?)\s*(?:Â?°C|°C|C), "
+        r"humidity (?P<humidity>\d+(?:\.\d+)?)%, wind (?P<wind>\d+(?:\.\d+)?) km/h",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        normalized = normalize_weather_block(text, target_language)
+        return normalized or (f"حالة الطقس الحالية باختصار: {text}" if target_language == "ar" else f"Current weather summary: {text}")
+
+    city = str(match.group("city") or WEATHER_DEFAULT_CITY).strip()
+    if city in {
+        "\u0627\u0644\u0646\u0647\u0627\u0631\u062f\u0629",
+        "\u0627\u0644\u0646\u0647\u0627\u0631\u062f\u0647",
+        "\u0627\u0644\u064a\u0648\u0645",
+        "\u062f\u0644\u0648\u0642\u062a\u064a",
+    }:
+        city = str(WEATHER_DEFAULT_CITY or "Cairo")
+    condition = str(match.group("condition") or "").strip()
+    temp = str(match.group("temp") or "?").rstrip("0").rstrip(".")
+    humidity = str(match.group("humidity") or "?").rstrip("0").rstrip(".")
+    wind = str(match.group("wind") or "?").rstrip("0").rstrip(".")
+
+    if target_language == "ar":
+        condition_ar = _WEATHER_CONDITION_AR.get(condition.lower(), condition)
+        city_ar = "\u0627\u0644\u0642\u0627\u0647\u0631\u0629" if city.lower() == "cairo" else city
+        return (
+            f"الطقس في {city_ar} دلوقتي: {condition_ar}. "
+            f"الحرارة {temp} درجة، الرطوبة {humidity} في المية، "
+            f"والرياح حوالي {wind} كيلومتر في الساعة."
+        )
+    return (
+        f"Weather in {city}: {condition}. "
+        f"Temperature {temp} degrees, humidity {humidity} percent, "
+        f"wind about {wind} kilometers per hour."
+    )
+
+
+def _direct_live_data_answer(query_text, tool_context, language):
+    context = str(tool_context or "").strip()
+    if not context:
+        return ""
+
+    if _looks_weather_or_clothing_query(query_text):
+        weather_block = _extract_tool_block(context, "WEATHER")
+        clean_weather = weather_block or context
+        return _format_weather_direct_answer(clean_weather, language)
+        if normalize_language(language) == "ar":
+            return f"حالة الطقس الحالية باختصار: {clean_weather}"
+        return f"Current weather summary: {clean_weather}"
+
+    if _looks_news_query(query_text):
+        search_block = _extract_tool_block(context, "WEB_SEARCH")
+        news_text = _format_news_from_search(search_block, language)
+        if news_text:
+            return news_text
+
+    return ""
+
+
+def _fallback_assist_first_response(original_text, language):
+    target_language = normalize_language(language)
+    if _looks_weather_or_clothing_query(original_text):
+        if target_language == "ar":
+            return (
+                "مش معايا بيانات طقس لحظية دلوقتي. "
+                "قاعدة سريعة: في الحر البس لبس خفيف واشرب مية، "
+                "في الجو المعتدل البس طبقات خفيفة مع جاكيت خفيف، "
+                "وفي البرد او الرياح البس معطف دافي وحذاء مقفول."
+            )
+        return (
+            "I do not have live weather data right now. "
+            "Quick rule: in hot weather wear breathable light layers and hydrate, "
+            "in mild weather use light layers with a light jacket, "
+            "and in cold or windy weather wear a warm coat with closed shoes."
+        )
+
+    if _looks_news_query(original_text):
+        if target_language == "ar":
+            return (
+                "مش معايا بث اخبار لحظي جوه الجلسة دي. "
+                "بس اقدر اساعدك فوراً: ابعت الموضوع والمنطقة والفترة الزمنية، "
+                "وهديك ملخص واضح مع نقاط تحقق سريعة للمصادر."
+            )
+        return (
+            "I do not have live news feed access in this session. "
+            "I can still help immediately: share the topic, region, and timeframe, "
+            "and I will produce a concise summary structure with quick source-check questions."
+        )
+
+    if target_language == "ar":
+        return (
+            "اقدر اساعدك بشكل مباشر. "
+            "اكتب هدفك في سطر واحد مع اي قيود مهمة، "
+            "وهديك خطوات عملية قصيرة وواضحة."
+        )
+    return (
+        "I can help directly. "
+        "Share your exact goal in one line plus any constraints, "
+        "and I will give you a concise, practical step-by-step answer."
+    )
+
+
+def _normalize_supported_language_tag(value):
+    key = str(value or "").strip().lower()
+    if key in {"ar", "arabic"}:
+        return "ar"
+    if key in {"en", "english"}:
+        return "en"
+    return ""
+
+
+def _shorten_to_words(text, max_words=16):
+    words = str(text or "").split()
+    if len(words) <= max(1, int(max_words or 1)):
+        return str(text or "").strip()
+    trimmed = " ".join(words[: max(1, int(max_words or 1))]).rstrip(".,;: ")
+    return f"{trimmed}..."
+
+
+def _analyze_tone_markers(text, language="en"):
+    normalized = _normalize_compact(text)
+    if not normalized:
+        return {"urgent": False, "polite": False}
+
+    urgent_markers = _URGENT_MARKERS_AR if str(language).strip().lower() == "ar" else _URGENT_MARKERS_EN
+    polite_markers = _POLITE_MARKERS_AR if str(language).strip().lower() == "ar" else _POLITE_MARKERS_EN
+
+    urgent = any(marker in normalized for marker in urgent_markers)
+    polite = any(marker in normalized for marker in polite_markers)
+    return {"urgent": bool(urgent), "polite": bool(polite)}
+
+
+def _try_handle_response_mode_toggle(text, language):
+    if not RESPONSE_MODE_FEATURE_ENABLED:
+        return ""
+
+    normalized = _normalize_compact(text)
+    if not normalized:
+        return ""
+
+    mode = ""
+    if normalized in _RESPONSE_MODE_EXPLAIN_ON_MARKERS:
+        mode = "explain"
+    elif normalized in _RESPONSE_MODE_EXPLAIN_OFF_MARKERS:
+        mode = "default"
+    elif normalized in _RESPONSE_MODE_CONCISE_ON_MARKERS:
+        mode = "concise"
+    elif normalized in _RESPONSE_MODE_CONCISE_OFF_MARKERS:
+        mode = "default"
+    elif normalized in _RESPONSE_MODE_DEFAULT_MARKERS:
+        mode = "default"
+
+    if not mode:
+        return ""
+
+    current_mode = session_memory.get_response_mode()
+    if current_mode != mode:
+        session_memory.set_response_mode(mode)
+
+    if mode == "explain":
+        return render_template("response_mode_explain_on", language)
+    if mode == "concise":
+        return render_template("response_mode_concise_on", language)
+    return render_template("response_mode_default_on", language)
+
+
+def _apply_output_mode(response_text, parsed, language):
+    mode = session_memory.get_response_mode()
+    text = str(response_text or "").strip()
+    if mode == "default" or not text:
+        return text
+
+    if mode == "concise":
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), text)
+        max_words = 18 if parsed and parsed.intent == "LLM_QUERY" else 14
+        return _shorten_to_words(first_line, max_words=max_words)
+
+    if mode == "explain":
+        lexical = persona_manager.get_lexical_bank(language=language)
+        bridge = str(lexical.get("explain_bridge") or render_template("response_explain_bridge", language)).strip()
+        explain_suffix = render_template(
+            "response_mode_explain_suffix",
+            language,
+            bridge=bridge,
+            intent=str(getattr(parsed, "intent", "unknown") or "unknown"),
+            action=str(getattr(parsed, "action", "") or "n/a"),
+        )
+        if explain_suffix and explain_suffix not in text:
+            separator = " " if text.endswith((".", "!", "?", "؟")) else ". "
+            return f"{text}{separator}{explain_suffix}"
+    return text
+
+
+def _apply_tone_adaptation(response_text, language, tone_meta, parsed=None):
+    if not TONE_ADAPTATION_ENABLED:
+        return response_text
+    text = str(response_text or "").strip()
+    if not text:
+        return text
+
+    tone = dict(tone_meta or {})
+    lexical = persona_manager.get_lexical_bank(language=language)
+    urgent_prefixes = list(lexical.get("urgent_prefixes") or [])
+    gentle_prefixes = list(lexical.get("gentle_prefixes") or [])
+    is_sensitive = _is_sensitive_command(parsed)
+
+    if tone.get("urgent"):
+        max_words = 18 if is_sensitive else 16
+        text = _shorten_to_words(text, max_words=max_words)
+        if is_sensitive and TONE_SENSITIVE_NEUTRAL_ENABLED:
+            prefix = "سأنفذ بحذر." if str(language).strip().lower() == "ar" else "Proceeding safely."
+        else:
+            prefix = urgent_prefixes[0] if urgent_prefixes else ""
+        if prefix and not _normalize_compact(text).startswith(_normalize_compact(prefix)):
+            text = f"{prefix} {text}".strip()
+        return text
+
+    if tone.get("polite"):
+        if is_sensitive and TONE_SENSITIVE_NEUTRAL_ENABLED:
+            return text
+        prefix = gentle_prefixes[0] if gentle_prefixes else ""
+        if prefix and not _normalize_compact(text).startswith(_normalize_compact(prefix)):
+            text = f"{prefix} {text}".strip()
+    return text
+
+
+def _apply_codeswitch_continuity(response_text, language, parsed=None):
+    if not CODE_SWITCH_CONTINUITY_ENABLED:
+        return response_text
+    text = str(response_text or "").strip()
+    if not text:
+        return text
+    if parsed and str(parsed.intent or "").strip().upper() == "LLM_QUERY":
+        return text
+    continuity_window = max(2, int(CODE_SWITCH_CONTINUITY_WINDOW or 6))
+    if not session_memory.is_code_switch_active(window=continuity_window):
+        return text
+
+    lexical = persona_manager.get_lexical_bank(language=language)
+    mix = session_memory.get_language_mix(window=continuity_window)
+    dominant_ratio = max(0.50, min(0.90, float(CODE_SWITCH_DOMINANT_RATIO or 0.70)))
+    dominant = str(mix.get("dominant") or "mixed")
+    en_ratio = float(mix.get("en_ratio") or 0.0)
+    ar_ratio = float(mix.get("ar_ratio") or 0.0)
+
+    if dominant == "en" and en_ratio >= dominant_ratio:
+        bridge = "I can switch to العربية anytime if you prefer."
+    elif dominant == "ar" and ar_ratio >= dominant_ratio:
+        bridge = "ممكن احول لـ English في اي وقت لو تحب."
+    else:
+        bridge = str(lexical.get("codeswitch_bridge") or "").strip()
+
+    if not bridge or bridge in text:
+        return text
+
+    if "\n" in text:
+        return f"{text}\n{bridge}"
+    return f"{text} {bridge}"
+
+
+def _record_response_quality(response_text, language, user_text):
+    recent = session_memory.recent(limit=1)
+    previous_response = ""
+    if recent:
+        previous_response = str((recent[-1] or {}).get("assistant") or "")
+    metrics.record_response_quality(
+        response_text,
+        language=language,
+        user_text=user_text,
+        previous_response=previous_response,
+        persona=persona_manager.get_profile(),
+        response_mode=session_memory.get_response_mode(),
+    )
+
+
+def _apply_egyptian_dialect_style(response_text, parsed, language):
+    text = str(response_text or "").strip()
+    if not text:
+        return text
+    if normalize_language(language) != "ar":
+        return text
+    if not parsed or str(parsed.intent or "").strip().upper() != "LLM_QUERY":
+        return text
+
+    try:
+        from audio.tts import _rewrite_to_egyptian_colloquial
+
+        rewritten = str(_rewrite_to_egyptian_colloquial(text) or "").strip()
+        if rewritten:
+            return rewritten
+    except Exception:
+        pass
+
+    return text
+
+
+def _repair_low_value_llm_response(response_text, parsed, language, original_text):
+    """Replace low-value LLM responses with a direct assist-first fallback.
+
+    No longer calls the LLM for rewrites — the improved model + slim prompt
+    should produce good output directly.  Only the static fallback is used
+    for genuinely empty or generic refusal responses.
+    """
+    text = str(response_text or "").strip()
+    if not text:
+        return text
+    if not parsed or str(parsed.intent or "").strip().upper() != "LLM_QUERY":
+        return text
+    if not _looks_low_value_llm_reply(text):
+        return text
+    if not _is_assist_first_safe_request(original_text):
+        return text
+
+    target_language = normalize_language(language)
+
+    if _looks_career_advice_query(original_text):
+        assist_first = _career_advice_fallback(target_language)
+        log_structured(
+            "route_llm_career_advice_fallback",
+            language=target_language,
+            response_preview=_truncate_text(assist_first),
+        )
+        return assist_first
+
+    # Hard assist-first rule: for normal safe user requests, never leave a generic
+    # dead-end refusal as the final answer.
+    assist_first = _fallback_assist_first_response(original_text, target_language)
+    if assist_first and not _looks_low_value_llm_reply(assist_first):
+        log_structured(
+            "route_llm_quality_fallback",
+            language=target_language,
+            response_preview=_truncate_text(assist_first),
+        )
+        return assist_first
+
+    return text
+
+
+def _strip_repeated_user_question(response_text, original_text):
+    """Remove a leading restatement of the user's question from an LLM answer."""
+    text = str(response_text or "").strip()
+    question = str(original_text or "").strip()
+    if not text or not question:
+        return text
+
+    def _norm(value):
+        value = " ".join(str(value or "").lower().split())
+        value = re.sub(r"^[\s:：,،.;!?؟\"'`،-]+|[\s:：,،.;!?؟\"'`،-]+$", "", value)
+        return value
+
+    def _strip_answer_label(value):
+        return re.sub(
+            r"^\s*(?:a|answer|الإجابة|الاجابة)\s*[:：-]\s*",
+            "",
+            str(value or "").strip(),
+            flags=re.IGNORECASE,
+        ).strip()
+
+    # Common "Question: ... Answer: ..." format.
+    qa_match = re.match(
+        r"^\s*(?:q|question|user|السؤال|سؤال)\s*[:：-]\s*(.+?)\s*(?:\n|\.|\?|؟|!|(?:a|answer|الإجابة|الاجابة)\s*[:：-])\s*(.+)$",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if qa_match:
+        possible_question = qa_match.group(1).strip()
+        answer = _strip_answer_label(qa_match.group(2))
+        if answer and (_norm(question).startswith(_norm(possible_question)[:30]) or _norm(possible_question).startswith(_norm(question)[:30])):
+            return answer
+
+    normalized_question = _norm(question)
+    normalized_text = _norm(text)
+    if normalized_question and normalized_text.startswith(normalized_question):
+        remainder = _strip_answer_label(text[len(question):].lstrip(" \t\r\n:：,،.;!?؟-—"))
+        if remainder:
+            return remainder
+
+    # If the first line/sentence is the question and the rest is the answer, drop it.
+    split_match = re.match(r"^(.{1,240}?[؟?!\.])\s+(.+)$", text, flags=re.DOTALL)
+    if split_match:
+        first = split_match.group(1).strip()
+        rest = split_match.group(2).strip()
+        first_norm = _norm(first)
+        if rest and normalized_question and (
+            first_norm == normalized_question
+            or normalized_question.startswith(first_norm)
+            or first_norm.startswith(normalized_question[: max(20, min(60, len(normalized_question)))])
+        ):
+            return _strip_answer_label(rest)
+
+    return text
+
+
+def _finalize_success_response(response_text, parsed, language, original_text, tone_meta, *, realtime=False):
+    """Minimal text-level post-processing — no LLM calls, no aggressive shaping.
+
+    Q2 2026 POST-PROCESSING OPTIMIZATION: Slim to 3 core transforms only.
+    
+    With a slim prompt + few-shot examples (no redundant guidance), the model produces
+    good output directly. Only three transforms that materially help voice UX:
+      1. Static assist-first fallback for genuinely empty/refusal replies (NO LLM).
+      2. Egyptian dialect TTS rewrite (text-level, needed for natural Arabic speech).
+      3. Length cap (prevents rambling over persona word target).
+
+    Dropped (8 transforms removed for speed & clarity): 
+      - output_mode (over-truncates responses)
+      - tone_adaptation (adds unnatural prefixes)
+      - codeswitch_continuity (injects random language nudges)
+      - anti_repetition (sometimes mangles correct text)
+      - analyze_tone_markers, apply_tone_adaptation, _apply_output_mode (now DELETED)
+      - All LLM-based post-processing transforms (NO LLM calls in response finalization)
+    
+    Args:
+        response_text: LLM response to finalize
+        parsed: Parsed command structure
+        language: Response language (e.g. "en", "ar")
+        original_text: Original user query
+        tone_meta: Tone metadata (unused in minimal pipeline)
+        realtime: Whether response is being streamed (unused in minimal pipeline)
+        
+    Returns:
+        Post-processed response text
+    """
+    _ = tone_meta, realtime
+    text = str(response_text or "").strip()
+
+    intent_upper = str(getattr(parsed, "intent", "") or "").strip().upper()
+    action_lower = str(getattr(parsed, "action", "") or "").strip().lower()
+
+    if RESPONSE_SHAPER_ENABLED and intent_upper != "LLM_QUERY":
+        # Never override confirmation / PIN prompts with a shaper template —
+        # the actual result message IS the important user-facing text.
+        _is_confirmation_msg = (
+            session_memory.get_pending_confirmation_token() == "pin_required"
+            or "pin" in text.lower()
+            or render_template("pin_required_prompt", "en") in text
+            or render_template("pin_required_prompt", "ar") in text
+        )
+        if not _is_confirmation_msg:
+            # Action intent: replace with bilingual template if one exists.
+            shaped = response_shaper.shape(
+                intent_upper,
+                action_lower,
+                dict(getattr(parsed, "args", None) or {}),
+                language,
+                llm_response=None,
+            )
+            if shaped:
+                text = shaped
+
+    text = _repair_low_value_llm_response(text, parsed, language, original_text)
+    if intent_upper == "LLM_QUERY":
+        text = _strip_repeated_user_question(text, original_text)
+    text = _apply_egyptian_dialect_style(text, parsed, language)
+
+    if RESPONSE_SHAPER_ENABLED and intent_upper == "LLM_QUERY":
+        # LLM response: strip any residual markdown and cap sentence count.
+        text = response_shaper._trim_for_voice(text, language, max_sentences=4)
+
+    # Only enforce reply language for LLM output — OS command responses come
+    # from bilingual templates keyed to the user's actual utterance language,
+    # so a session-language mismatch is expected and correct (not an error).
+    if intent_upper == "LLM_QUERY":
+        text = _enforce_reply_language(text, language, original_text, stage="final")
+    _record_response_quality(text, language, original_text)
+    return text
+
+
+def post_process_response(response_text, context=None):
+    """PUBLIC: Consolidated response post-processing function.
+    
+    Entry point for response finalization. Use this for clarity when post-processing
+    is needed outside the main routing pipeline.
+    
+    Args:
+        response_text: Raw LLM response text
+        context: Dict with keys: parsed, language, original_text, tone_meta, realtime
+        
+    Returns:
+        Post-processed response text
+    """
+    if context is None:
+        context = {}
+    
+    parsed = context.get("parsed")
+    language = context.get("language", "en")
+    original_text = context.get("original_text", response_text)
+    tone_meta = context.get("tone_meta")
+    realtime = context.get("realtime", False)
+    
+    return _finalize_success_response(response_text, parsed, language, original_text, tone_meta, realtime=realtime)
+
+
+def _reference_confidence(timestamp, slot_type="generic"):
+    ts = float(timestamp or 0.0)
+    if ts <= 0.0:
+        return 0.0
+
+    slot_key = str(slot_type or "").strip().lower()
+    max_age = max(5, int(FOLLOWUP_REFERENCE_MAX_AGE_SECONDS or 1800))
+    half_life = max(5, int(FOLLOWUP_REFERENCE_MAX_AGE_SECONDS or 1800) // 2)
+
+    if slot_key == "last_app":
+        max_age = max(5, int(FOLLOWUP_APP_REFERENCE_MAX_AGE_SECONDS or max_age))
+        half_life = max(5, int(FOLLOWUP_APP_REFERENCE_HALF_LIFE_SECONDS or half_life))
+    elif slot_key == "last_file":
+        max_age = max(5, int(FOLLOWUP_FILE_REFERENCE_MAX_AGE_SECONDS or max_age))
+        half_life = max(5, int(FOLLOWUP_FILE_REFERENCE_HALF_LIFE_SECONDS or half_life))
+    elif slot_key in {"pending_confirmation", "pending_confirmation_token"}:
+        max_age = max(5, int(FOLLOWUP_PENDING_CONFIRMATION_MAX_AGE_SECONDS or 180))
+        half_life = max(5, int(FOLLOWUP_PENDING_CONFIRMATION_HALF_LIFE_SECONDS or 75))
+
+    age = max(0.0, time.time() - ts)
+    if age > max_age:
+        return 0.0
+
+    confidence = pow(0.5, age / float(half_life))
+    return max(0.0, min(1.0, confidence))
+
+
+def _is_fresh_reference(timestamp, slot_type="generic"):
+    if session_memory.slot_is_fresh(slot_type, updated_at=timestamp):
+        return True
+    confidence = _reference_confidence(timestamp, slot_type=slot_type)
+    min_confidence = float(FOLLOWUP_REFERENCE_MIN_CONFIDENCE or 0.2)
+    if confidence >= min_confidence:
+        return True
+    if str(slot_type or "").strip().lower() == "generic" and timestamp:
+        # Backward-compatible fallback for any call site that still uses generic slots.
+        max_age = max(5, int(FOLLOWUP_REFERENCE_MAX_AGE_SECONDS or 1800))
+        return (time.time() - float(timestamp or 0.0)) <= max_age
+    return False
+
+
+def _apply_persona_length_target(response_text, parsed):
+    if not PERSONA_LENGTH_TARGET_ENABLED:
+        return response_text
+    if not response_text:
+        return response_text
+    if (response_text or "").count("\n") > 0:
+        return response_text
+    if not parsed or parsed.intent != "LLM_QUERY":
+        return response_text
+
+    persona_key = persona_manager.get_profile()
+    max_words = int((PERSONA_RESPONSE_MAX_WORDS or {}).get(persona_key) or 0)
+    if max_words <= 0:
+        return response_text
+
+    words = str(response_text).split()
+    if len(words) <= max_words:
+        return response_text
+    shortened = " ".join(words[:max_words]).rstrip(".,;: ")
+    return f"{shortened}..."
+
+
+def _required_permission(parsed):
+    if parsed.intent == "OS_FILE_NAVIGATION":
+        if parsed.action in {"create_directory", "delete_item", "delete_item_permanent", "move_item", "rename_item"}:
+            return "file_write"
+        return "file_navigation"
+    return _PERMISSION_MAP.get(parsed.intent)
+
+
+def _is_arabic_language(language):
+    return str(language or "").lower().startswith("ar")
+
+
+def _format_chain_message(result, language):
+    commands_executed = int(result.get("commands_executed") or len(result.get("results") or []) or 0)
+    if _is_arabic_language(language):
+        if commands_executed == 1:
+            return "جاهز: أمر متسلسل واحد."
+        return f"جاهز: {commands_executed} أوامر متسلسلة."
+    if commands_executed == 1:
+        return "Ready: 1 chained action."
+    return f"Ready: {commands_executed} chained actions."
+
+
+def _format_batch_message(result, language):
+    operation = str(result.get("operation") or "batch").strip()
+    files = list(result.get("files") or [])
+    count = int(result.get("count") or len(files) or 0)
+    if _is_arabic_language(language):
+        if operation == "delete_multiple":
+            return f"جاهز: حذف {count} ملفات."
+        if operation == "copy_multiple":
+            return f"جاهز: نسخ {count} ملفات."
+        if operation == "move_multiple":
+            return f"جاهز: نقل {count} ملفات."
+        return f"جاهز: عملية جماعية لـ {count} عناصر."
+    if operation == "delete_multiple":
+        return f"Ready: delete {count} files."
+    if operation == "copy_multiple":
+        return f"Ready: copy {count} files."
+    if operation == "move_multiple":
+        return f"Ready: move {count} files."
+    return f"Ready: batch operation for {count} items."
+
+
+def _format_search_message(result, language):
+    matches = list(result.get("results") or [])
+    count = int(result.get("count") or len(matches) or 0)
+    query = str(result.get("query") or "").strip()
+    if _is_arabic_language(language):
+        if not matches:
+            return f"لا توجد نتائج مطابقة{' لـ ' + query if query else ''}."
+        lines = [f"نتائج البحث{' عن ' + query if query else ''}: {count} ملفات"]
+        lines.extend(f"- {match}" for match in matches)
+        return "\n".join(lines)
+    if not matches:
+        return f"No matches found{' for ' + query if query else ''}."
+    lines = [f"Search results{' for ' + query if query else ''}: {count} files"]
+    lines.extend(f"- {match}" for match in matches)
+    return "\n".join(lines)
+
+
+def _split_chained_command_text(command_text):
+    raw_text = str(command_text or "").strip()
+    if not raw_text:
+        return []
+    parts = re.split(r"(?:\s+(?:and|then|or)\s+|\s+(?:و|ثم|وبعدين|او|أو)(?:\s+|(?=[\u0600-\u06FFA-Za-z]))|\s+و(?=[\u0600-\u06FFA-Za-z]))", raw_text, flags=re.IGNORECASE)
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def _execute_chained_commands(command_text, language, *, on_sentence=None):
+    results = []
+    parts = _split_chained_command_text(command_text)
+    if not parts:
+        return False, "Could not parse chained command.", {"phase4_chain": {"commands_executed": 0, "results": []}}
+
+    for index, part in enumerate(parts):
+        parsed_part = parse_command(part)
+        parsed_part.raw = part
+        try:
+            success, response, dispatch_meta = _dispatch(parsed_part, on_sentence=on_sentence)
+        except Exception as exc:
+            logger.error("Chained command step failed: %s", exc)
+            success, response, dispatch_meta = False, "Sorry, I had an internal error.", {}
+
+        result_entry = {
+            "command": part,
+            "intent": parsed_part.intent,
+            "action": parsed_part.action,
+            "args": dict(parsed_part.args or {}),
+            "success": bool(success),
+            "message": response,
+        }
+        if dispatch_meta:
+            result_entry["meta"] = dict(dispatch_meta)
+        results.append(result_entry)
+
+        if not success:
+            return False, response, {"phase4_chain": {"commands_executed": len(results), "results": results}}
+
+        if index < len(parts) - 1:
+            time.sleep(2.0)
+
+    message = f"تمام، نفذت {len(results)} أوامر متتالية." if language == "ar" else f"Done: executed {len(results)} chained actions."
+    return True, message, {"phase4_chain": {"commands_executed": len(results), "results": results}}
+
+
+
+def _infer_language_for_response(parsed, fallback_language):
+    raw_text = str(getattr(parsed, "raw", "") or "")
+    if re.search(r"[\u0600-\u06FF]", raw_text):
+        return "ar"
+    fallback = str(fallback_language or "").strip().lower()
+    return fallback if fallback in {"en", "ar"} else "en"
+
+
+def _language_from_parsed(parsed):
+    containers = []
+    args = getattr(parsed, "args", None)
+    if isinstance(args, dict):
+        containers.append(args)
+    entities = getattr(parsed, "entities", None)
+    if isinstance(entities, dict):
+        containers.append(entities)
+    for container in containers:
+        value = str(container.get("language") or container.get("lang") or "").strip().lower()
+        if value in {"en", "ar"}:
+            return value
+    return ""
+
+
+def _last_stt_locked_language():
+    try:
+        from audio.stt import get_last_transcription_meta
+
+        meta = get_last_transcription_meta()
+    except Exception:
+        return ""
+    lang = str((meta or {}).get("lang_pick_lang") or "").strip().lower()
+    return lang if lang in {"en", "ar"} else ""
+
+
+def resolve_reply_language(spoken_language, parsed):
+    """Resolve the single reply language used for LLM prompts this turn."""
+    spoken = str(spoken_language or "").strip().lower()
+    if spoken in {"en", "ar"}:
+        return spoken
+    stt_lang = _last_stt_locked_language()
+    if stt_lang in {"en", "ar"}:
+        return stt_lang
+    parsed_lang = _language_from_parsed(parsed)
+    if parsed_lang in {"en", "ar"}:
+        return parsed_lang
+    hint_lang = str(STT_LANGUAGE_HINT or "").strip().lower()
+    if hint_lang in {"en", "ar"}:
+        return hint_lang
+    default_lang = str(LLM_DEFAULT_LANGUAGE or "").strip().lower()
+    if default_lang in {"en", "ar"}:
+        return default_lang
+    fallback = str(spoken_language or "").strip().lower()
+    return fallback if fallback in {"en", "ar"} else "en"
+
+
+def _log_llm_language_mismatch(text, expected_language):
+    if not str(text or "").strip():
+        return
+    expected = normalize_language(expected_language)
+    if expected not in {"en", "ar"}:
+        return
+    try:
+        got = detect_language(text)
+    except Exception:
+        got = detect_language_hint(text, fallback=expected)
+    if got not in {"en", "ar"}:
+        return
+    if got != expected:
+        llm_logger.warning(
+            "llm_lang_mismatch expected=%s got=%s preview=%s",
+            expected,
+            got,
+            str(text or "")[:60],
+        )
+
+
+def _is_response_language_mismatch(text, expected_language):
+    value = str(text or "").strip()
+    if not value:
+        return False
+    expected = normalize_language(expected_language)
+    try:
+        got = detect_language(value)
+    except Exception:
+        got = detect_language_hint(value, fallback=expected)
+    if expected == "ar":
+        arabic_chars = len(re.findall(r"[\u0600-\u06FF]", value))
+        latin_chars = len(re.findall(r"[A-Za-z]", value))
+        latin_heavy = latin_chars >= 12 and latin_chars >= max(8, arabic_chars)
+        english_weather_words = re.search(
+            r"\b(clear|skies|today|high|humidity|winds?|coming|kilometers?|degrees?|mostly)\b",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if latin_heavy or english_weather_words:
+            return True
+    if got not in {"en", "ar"}:
+        return False
+    return got != expected
+
+
+def _looks_identity_question_legacy_unused(text):
+    value = str(text or "").strip().lower()
+    if not value:
+        return False
+    if any(phrase in value for phrase in ("who are you", "what are you", "your name", "what's your name")):
+        return True
+    compact = value.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+    return "مين" in compact and any(token in compact for token in ("انت", "انتا", "انتي", "اسمك"))
+
+
+def _language_guard_fallback_legacy_unused(original_text, language):
+    target_language = normalize_language(language)
+    if target_language == "ar":
+        if _looks_identity_question(original_text):
+            return "أنا جارفس، مساعدك الصوتي. موجود أساعدك بسرعة وبالعامية المصرية."
+        return _fallback_assist_first_response(original_text, "ar")
+    if _looks_identity_question(original_text):
+        return "I'm Jarvis, your voice assistant. I can help with quick, practical answers and actions."
+    return _fallback_assist_first_response(original_text, "en")
+
+
+def _looks_identity_question(text):
+    value = str(text or "").strip().lower()
+    if not value:
+        return False
+    if any(phrase in value for phrase in ("who are you", "what are you", "your name", "what's your name")):
+        return True
+    compact = (
+        value.replace("\u0623", "\u0627")
+        .replace("\u0625", "\u0627")
+        .replace("\u0622", "\u0627")
+        .replace("\u0649", "\u064a")
+    )
+    return "\u0645\u064a\u0646" in compact and any(
+        token in compact
+        for token in (
+            "\u0627\u0646\u062a",
+            "\u0627\u0646\u062a\u0627",
+            "\u0627\u0646\u062a\u064a",
+            "\u0627\u0633\u0645\u0643",
+        )
+    )
+
+
+def _language_guard_fallback(original_text, language):
+    target_language = normalize_language(language)
+    if target_language == "ar":
+        if _looks_identity_question(original_text):
+            return (
+                "\u0623\u0646\u0627 \u062c\u0627\u0631\u0641\u0633\u060c "
+                "\u0645\u0633\u0627\u0639\u062f\u0643 \u0627\u0644\u0635\u0648\u062a\u064a. "
+                "\u0645\u0648\u062c\u0648\u062f \u0623\u0633\u0627\u0639\u062f\u0643 "
+                "\u0628\u0633\u0631\u0639\u0629 \u0648\u0628\u0627\u0644\u0639\u0627\u0645\u064a\u0629 "
+                "\u0627\u0644\u0645\u0635\u0631\u064a\u0629."
+            )
+        return _fallback_assist_first_response(original_text, "ar")
+    if _looks_identity_question(original_text):
+        return "I'm Jarvis, your voice assistant. I can help with quick, practical answers and actions."
+    return _fallback_assist_first_response(original_text, "en")
+
+
+def _enforce_reply_language(response_text, language, original_text, *, stage="final"):
+    text = str(response_text or "").strip()
+    expected = normalize_language(language)
+    if not text or not _is_response_language_mismatch(text, expected):
+        return response_text
+    fallback = _language_guard_fallback(original_text, expected)
+    llm_logger.warning(
+        "llm_lang_mismatch expected=%s got=%s stage=%s preview=%s",
+        expected,
+        detect_language(text),
+        stage,
+        text[:60],
+    )
+    return fallback or response_text
+
+
+def _execute_confirmed_payload(payload):
+    kind = (payload or {}).get("kind")
+    if kind == "system_command":
+        action_key = payload.get("action_key")
+        command_args = dict(payload.get("command_args") or {})
+        return to_router_tuple(execute_system_command_result(action_key, command_args=command_args))
+    if kind == "file_operation":
+        return to_router_tuple(execute_confirmed_file_operation(payload))
+    if kind == "app_operation":
+        return to_router_tuple(execute_confirmed_app_operation(payload))
+    log_action(
+        "confirmation_rejected",
+        "failed",
+        details={"reason": "unsupported_payload_kind", "kind": str(kind or "")},
+    )
+    language = session_memory.get_preferred_language()
+    return False, render_template("unsupported_confirmation_payload", language), {}
+
+
+def _format_source_citations(sources):
+    if not sources:
+        return ""
+    lines = ["", "Sources:"]
+    seen = set()
+    for item in sources:
+        key = (item.get("source"), item.get("chunk_index"))
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"- {item.get('source')} (chunk {item.get('chunk_index')})")
+    return "\n".join(lines)
+
+
+def _normalize_repetition_text(text):
+    return " ".join((text or "").lower().split()).strip()
+
+
+def _apply_anti_repetition(response_text, language):
+    if (response_text or "").count("\n") > 3:
+        return response_text
+
+    normalized_response = _normalize_repetition_text(response_text)
+    if not normalized_response:
+        return response_text
+
+    recent = session_memory.recent(limit=3)
+    if not recent:
+        return response_text
+
+    last_assistant = _normalize_repetition_text((recent[-1] or {}).get("assistant") or "")
+    if normalized_response != last_assistant:
+        return response_text
+
+    language_key = detect_language_hint(response_text, fallback=language)
+    persona_key = persona_manager.get_profile()
+    prefixes = anti_repetition_prefixes(language_key, persona_key)
+    if not prefixes:
+        return response_text
+
+    prefix = prefixes[len(recent) % len(prefixes)]
+    if _normalize_repetition_text(prefix) and normalized_response.startswith(_normalize_repetition_text(prefix)):
+        return response_text
+    return f"{prefix}{response_text}"
+
+
+def _should_store_turn(parsed, response_text):
+    if not parsed or not response_text:
+        return False
+    if len(response_text) > 2000 or response_text.count("\n") > 20:
+        return False
+    if parsed.intent in {
+        "METRICS_REPORT",
+        "OBSERVABILITY_REPORT",
+        "AUDIT_LOG_REPORT",
+        "AUDIT_VERIFY",
+        "AUDIT_RESEAL",
+    }:
+        return False
+    return True
+
+
+def _rewrite_followup_command(text, language="en"):
+    raw = str(text or "").strip()
+    normalized = " ".join(raw.lower().split())
+    if not normalized:
+        return text, {}
+
+    pending_clarification = session_memory.get_pending_clarification()
+    pending_token = session_memory.get_pending_confirmation_token()
+    pending_token_ts = session_memory.get_pending_confirmation_timestamp()
+    has_fresh_pending_token = bool(pending_token) and _is_fresh_reference(
+        pending_token_ts,
+        slot_type="pending_confirmation",
+    )
+    if pending_token and not has_fresh_pending_token:
+        session_memory.clear_pending_confirmation_token()
+        pending_token = ""
+
+    if normalized in _CANCEL_FOLLOWUP_TEXTS and pending_token and not pending_clarification:
+        return raw, {"followup_cancel_confirmation": True, "token": pending_token}
+
+    if normalized in _NO_CANCEL_FOLLOWUP_TEXTS and pending_token and not pending_clarification:
+        return raw, {
+            "followup_cancel_confirmation": True,
+            "followup_rewrite": "confirmation_implicit_no",
+            "token": pending_token,
+        }
+
+    if pending_token == "pin_required":
+        # A PIN is pending: digit/number-word utterances are intercepted
+        # earlier in route_command. Anything else that looks like a
+        # confirm/yes phrase just gets re-prompted for the PIN itself.
+        if (
+            normalized in _YES_CONFIRM_FOLLOWUP_TEXTS
+            or normalized in _CONFIRM_FOLLOWUP_TEXTS
+            or _YES_WITH_FACTOR_RE.match(raw)
+            or _AR_YES_WITH_FACTOR_RE.match(raw)
+            or _CONFIRM_IT_WITH_FACTOR_RE.match(raw)
+            or _AR_CONFIRM_IT_WITH_FACTOR_RE.match(raw)
+        ):
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("pin_required_prompt", language),
+            }
+
+    yes_with_factor_match = _YES_WITH_FACTOR_RE.match(raw) or _AR_YES_WITH_FACTOR_RE.match(raw)
+    if yes_with_factor_match:
+        if pending_token:
+            second_factor = yes_with_factor_match.group(1).strip()
+            return (
+                f"confirm {pending_token} {second_factor}",
+                {"followup_rewrite": "confirmation_implicit_yes", "token": pending_token},
+            )
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_pending_confirmation", language),
+        }
+
+    if normalized in _YES_CONFIRM_FOLLOWUP_TEXTS and pending_token:
+        return f"confirm {pending_token}", {"followup_rewrite": "confirmation_implicit_yes", "token": pending_token}
+
+    factor_match = _CONFIRM_IT_WITH_FACTOR_RE.match(raw) or _AR_CONFIRM_IT_WITH_FACTOR_RE.match(raw)
+    if factor_match:
+        if pending_token:
+            second_factor = factor_match.group(1).strip()
+            return (
+                f"confirm {pending_token} {second_factor}",
+                {"followup_rewrite": "confirmation", "token": pending_token},
+            )
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_pending_confirmation", language),
+        }
+
+    if normalized in _CONFIRM_FOLLOWUP_TEXTS and pending_token:
+        return f"confirm {pending_token}", {"followup_rewrite": "confirmation", "token": pending_token}
+
+    if normalized in _CONFIRM_FOLLOWUP_TEXTS and not pending_token:
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_pending_confirmation", language),
+        }
+
+    if normalized in _CONTINUE_FOLLOWUP_TEXTS:
+        has_recent_llm_context = session_memory.has_recent_context(language=language, intents={"LLM_QUERY"})
+        if has_recent_llm_context:
+            return raw, {
+                "followup_rewrite": "continue_previous_topic",
+                "followup_continue_previous": True,
+            }
+
+    last_file = session_memory.get_last_file()
+    last_file_ts = session_memory.get_last_file_timestamp()
+    has_fresh_file = bool(last_file) and _is_fresh_reference(last_file_ts, slot_type="last_file")
+    has_stale_file = bool(last_file) and not has_fresh_file
+
+    last_app = session_memory.get_last_app()
+    last_app_ts = session_memory.get_last_app_timestamp()
+    has_fresh_app = bool(last_app) and _is_fresh_reference(last_app_ts, slot_type="last_app")
+    has_stale_app = bool(last_app) and not has_fresh_app
+    previous_app = session_memory.get_previous_app()
+    previous_app_ts = session_memory.get_previous_app_timestamp()
+    has_fresh_previous_app = bool(previous_app) and _is_fresh_reference(previous_app_ts, slot_type="previous_app")
+    has_stale_previous_app = bool(previous_app) and not has_fresh_previous_app
+
+    rename_match = _RENAME_IT_TO_RE.match(raw) or _AR_RENAME_IT_TO_RE.match(raw)
+    if rename_match:
+        if has_fresh_file:
+            return (
+                f"rename {last_file} to {rename_match.group(1).strip()}",
+                {"followup_rewrite": "rename_last_file", "last_file": last_file},
+            )
+        if has_stale_file:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_last_file_rename", language),
+        }
+
+    move_match = _MOVE_IT_TO_RE.match(raw) or _AR_MOVE_IT_TO_RE.match(raw)
+    if move_match:
+        if has_fresh_file:
+            return (
+                f"move {last_file} to {move_match.group(1).strip()}",
+                {"followup_rewrite": "move_last_file", "last_file": last_file},
+            )
+        if has_stale_file:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_last_file_move", language),
+        }
+
+    if normalized in _DELETE_FOLLOWUP_TEXTS or normalized in _DELETE_LAST_FILE_FOLLOWUP_TEXTS:
+        if FOLLOWUP_DESTRUCTIVE_REQUIRE_EXPLICIT_REFERENCE and normalized in _DELETE_VAGUE_FOLLOWUP_TEXTS:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("destructive_followup_requires_explicit_target", language),
+            }
+
+        destructive_confidence = session_memory.slot_confidence("last_file", updated_at=last_file_ts)
+        destructive_min_confidence = max(
+            float(FOLLOWUP_REFERENCE_MIN_CONFIDENCE or 0.2),
+            float(FOLLOWUP_DESTRUCTIVE_REFERENCE_MIN_CONFIDENCE or 0.55),
+        )
+        if has_fresh_file:
+            if destructive_confidence < destructive_min_confidence:
+                return raw, {
+                    "followup_blocked": True,
+                    "followup_message": render_template("destructive_followup_low_confidence", language),
+                }
+            return f"delete {last_file}", {"followup_rewrite": "delete_last_file", "last_file": last_file}
+        if has_stale_file:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_last_file_delete", language),
+        }
+
+    if normalized in _OPEN_LAST_APP_FOLLOWUP_TEXTS:
+        if has_fresh_app:
+            return f"open app {last_app}", {"followup_rewrite": "open_last_app", "last_app": last_app}
+        if has_stale_app:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_last_app_open", language),
+        }
+
+    if normalized in _OPEN_LAST_FILE_FOLLOWUP_TEXTS:
+        if has_fresh_file:
+            if os.path.isdir(last_file):
+                return f"open {last_file}", {"followup_rewrite": "open_last_file", "last_file": last_file}
+            return f"file info {last_file}", {"followup_rewrite": "file_info_last_file", "last_file": last_file}
+        if has_stale_file:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_followup_reference", language),
+        }
+
+    if normalized in _OPEN_BOTH_FOLLOWUP_TEXTS:
+        actions = []
+        if has_fresh_app:
+            actions.append(
+                {
+                    "intent": "OS_APP_OPEN",
+                    "action": "",
+                    "args": {"app_name": last_app},
+                }
+            )
+        if has_fresh_previous_app and previous_app.lower() != last_app.lower():
+            actions.append(
+                {
+                    "intent": "OS_APP_OPEN",
+                    "action": "",
+                    "args": {"app_name": previous_app},
+                }
+            )
+        if len(actions) < 2 and has_fresh_file:
+            file_action = "open" if os.path.isdir(last_file) else "file_info"
+            actions.append(
+                {
+                    "intent": "OS_FILE_NAVIGATION",
+                    "action": file_action,
+                    "args": {"path": last_file},
+                }
+            )
+
+        if len(actions) >= 2:
+            return raw, {
+                "followup_rewrite": "open_both_recent_targets",
+                "followup_multi_actions": actions[:2],
+            }
+
+        if has_stale_app or has_stale_file or has_stale_previous_app:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_second_recent_app", language),
+        }
+
+    if normalized in _CLOSE_BOTH_FOLLOWUP_TEXTS:
+        actions = []
+        if has_fresh_app:
+            actions.append(
+                {
+                    "intent": "OS_APP_CLOSE",
+                    "action": "",
+                    "args": {"app_name": last_app},
+                }
+            )
+        if has_fresh_previous_app and previous_app.lower() != last_app.lower():
+            actions.append(
+                {
+                    "intent": "OS_APP_CLOSE",
+                    "action": "",
+                    "args": {"app_name": previous_app},
+                }
+            )
+
+        if len(actions) >= 2:
+            return raw, {
+                "followup_rewrite": "close_both_recent_apps",
+                "followup_multi_actions": actions[:2],
+            }
+
+        if has_stale_app or has_stale_previous_app:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_second_recent_app", language),
+        }
+
+    if normalized in _OPEN_FOLLOWUP_TEXTS:
+        candidates = []
+        has_stale_reference = bool(has_stale_file or has_stale_app)
+        if has_fresh_file and has_fresh_app:
+            conflict_window = max(0.0, float(FOLLOWUP_REFERENCE_CONFLICT_WINDOW_SECONDS or 0.0))
+            if conflict_window > 0.0 and abs(float(last_file_ts or 0.0) - float(last_app_ts or 0.0)) <= float(conflict_window):
+                return raw, {
+                    "followup_blocked": True,
+                    "followup_message": render_template("followup_reference_conflict", language),
+                }
+        if has_fresh_file:
+            if os.path.isdir(last_file):
+                candidates.append((last_file_ts, f"open {last_file}", "open_last_file", {"last_file": last_file}))
+            elif os.path.isfile(last_file):
+                candidates.append((last_file_ts, f"file info {last_file}", "file_info_last_file", {"last_file": last_file}))
+            else:
+                candidates.append((last_file_ts, f"file info {last_file}", "file_info_last_file", {"last_file": last_file}))
+        if has_fresh_app:
+            candidates.append((last_app_ts, f"open app {last_app}", "open_last_app", {"last_app": last_app}))
+
+        if candidates:
+            _ts, rewritten, rewrite_name, extra_meta = max(candidates, key=lambda row: row[0])
+            meta = {"followup_rewrite": rewrite_name}
+            meta.update(extra_meta)
+            return rewritten, meta
+
+        if has_stale_reference:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_followup_reference", language),
+        }
+
+    if normalized in _CLOSE_FOLLOWUP_TEXTS or normalized in _CLOSE_LAST_APP_FOLLOWUP_TEXTS:
+        if has_fresh_app:
+            return f"close app {last_app}", {"followup_rewrite": "close_last_app", "last_app": last_app}
+        if has_stale_app:
+            return raw, {
+                "followup_blocked": True,
+                "followup_message": render_template("stale_followup_reference", language),
+            }
+        return raw, {
+            "followup_blocked": True,
+            "followup_message": render_template("missing_last_app_close", language),
+        }
+
+    return text, {}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — pending-task memory (multi-turn slot filling)
+# ---------------------------------------------------------------------------
+# Unlike the generic single-slot `pending_clarification` mechanism above (one
+# missing slot, then dispatch), a pending task walks through several required
+# slots across turns before dispatching — e.g. email compose needs to/body/
+# subject in sequence. Task schemas declare the slot order per intent.
+_PENDING_TASK_SLOT_ORDER = {
+    "OS_EMAIL": ("to", "body", "subject"),
+}
+
+# Phase 5 — generic nouns that resolve to a stored preference when the user
+# doesn't name a specific app ("open browser" -> preferred browser).
+_GENERIC_APP_PREFERENCE_TERMS = {
+    "browser": "browser",
+    "web browser": "browser",
+    "المتصفح": "browser",
+    "متصفح": "browser",
+    "music": "music",
+    "music app": "music",
+    "الموسيقى": "music",
+    "موسيقى": "music",
+    "المزيكا": "music",
+}
+
+
+def _resolve_generic_app_preference(app_name):
+    """Map a bare generic term ("browser") to the user's app, if resolvable.
+
+    Explicit preference (Phase 5, "remember my browser is Chrome") wins first;
+    otherwise fall back to habit (Phase 6, the app most often opened overall).
+    """
+    key = _GENERIC_APP_PREFERENCE_TERMS.get(str(app_name or "").strip().lower())
+    if not key:
+        return app_name
+    try:
+        preferred = session_memory.get_user_preference(key)
+    except Exception:
+        preferred = ""
+    if preferred:
+        return preferred
+    if MEMORY_COMMAND_USAGE_ENABLED:
+        try:
+            habitual = session_memory.get_habitual_value("OS_APP_OPEN", "app_name")
+        except Exception:
+            habitual = ""
+        if habitual:
+            return habitual
+    return app_name
+
+
+def _next_missing_task_slot(intent, args):
+    for slot in _PENDING_TASK_SLOT_ORDER.get(intent, ()):
+        if not str(args.get(slot) or "").strip():
+            return slot
+    return ""
+
+
+def _start_pending_task(intent, action, args, language, *, ttl_seconds=None):
+    """Create a pending task for `intent` and return the next slot question."""
+    from core.config import MEMORY_PENDING_TASK_TTL_SECONDS
+
+    args = dict(args or {})
+    missing_slot = _next_missing_task_slot(intent, args)
+    if not missing_slot:
+        return None, ""
+
+    session_memory.set_pending_task(
+        {
+            "intent": intent,
+            "action": action,
+            "args": args,
+        },
+        ttl_seconds=ttl_seconds or MEMORY_PENDING_TASK_TTL_SECONDS,
+    )
+    question = _build_slot_question(intent, missing_slot, language)
+    return missing_slot, question
+
+
+def _advance_pending_task(text, language):
+    """If a pending task is active, treat `text` as the next slot's value.
+
+    Returns (handled, response) where `handled` is False when there is no
+    pending task (caller should continue normal routing).
+    """
+    task = session_memory.get_pending_task()
+    if not task:
+        return False, ""
+
+    intent = str(task.get("intent") or "")
+    action = str(task.get("action") or "")
+    args = dict(task.get("args") or {})
+    missing_slot = _next_missing_task_slot(intent, args)
+    if not missing_slot:
+        session_memory.clear_pending_task()
+        return False, ""
+
+    value = str(text or "").strip()
+    if not value:
+        question = _build_slot_question(intent, missing_slot, language)
+        return True, question
+
+    args[missing_slot] = value
+    next_slot = _next_missing_task_slot(intent, args)
+    if next_slot:
+        session_memory.set_pending_task({"intent": intent, "action": action, "args": args})
+        question = _build_slot_question(intent, next_slot, language)
+        return True, question
+
+    session_memory.clear_pending_task()
+
+    if intent == "OS_EMAIL":
+        response = draft_email(
+            to=args.get("to", ""),
+            subject=args.get("subject", ""),
+            body=args.get("body", ""),
+            language=language,
+        )
+        session_memory.add_turn(text, response, language=language, intent="OS_EMAIL")
+        return True, response
+
+    return False, ""
+
+
+def _update_short_term_context(parsed, success, message, meta):
+    token = str(meta.get("token") or "").strip().lower()
+    if token == "pin_required":
+        # PIN-pending flow: reuse the pending-confirmation slot as a flag
+        # (no real token is ever stored or spoken).
+        session_memory.set_pending_confirmation_token(token)
+    elif token:
+        session_memory.set_pending_confirmation_token(token)
+    elif parsed.intent in {"OS_CONFIRMATION", "OS_PIN_CONFIRM"} and success:
+        session_memory.clear_pending_confirmation_token()
+    elif parsed.intent == "OS_CONFIRMATION" and not success:
+        lowered_message = str(message or "").lower()
+        if "not found or expired" in lowered_message or "token expired" in lowered_message:
+            session_memory.clear_pending_confirmation_token()
+    elif parsed.intent == "OS_PIN_CONFIRM" and not success:
+        lowered_message = str(message or "").lower()
+        if "wrong pin" not in lowered_message:
+            session_memory.clear_pending_confirmation_token()
+
+    if parsed.intent == "OS_FILE_SEARCH" and success and not meta.get("clarification_payload"):
+        # Prefer the raw resolved path from meta (present when a single match was
+        # found), falling back to the message text only when it looks like a path.
+        resolved = str(meta.get("resolved_file_path") or "").strip()
+        if resolved:
+            session_memory.set_last_file(resolved)
+        else:
+            candidate = str(message or "").strip()
+            if candidate and (":\\" in candidate or "/" in candidate):
+                session_memory.set_last_file(candidate)
+
+    if parsed.intent in {"OS_APP_OPEN", "OS_APP_CLOSE"} and success:
+        app_name = (
+            str(meta.get("target") or "").strip()
+            or str((parsed.args or {}).get("app_name") or "").strip()
+            or str(meta.get("process_name") or "").strip()
+        )
+        if app_name:
+            session_memory.set_last_app(app_name)
+            session_memory.record_app_usage(app_name)
+            if MEMORY_COMMAND_USAGE_ENABLED:
+                usage_parsed = ParsedCommand(
+                    intent=parsed.intent,
+                    raw=parsed.raw,
+                    normalized=parsed.normalized,
+                    action=parsed.action,
+                    args={"app_name": app_name},
+                )
+                session_memory.record_command_usage(usage_parsed)
+
+    if parsed.intent == "OS_FILE_NAVIGATION" and success:
+        action = parsed.action
+        args = dict(parsed.args or {})
+        path = ""
+        if action in {"cd", "list_directory", "file_info", "create_directory", "delete_item", "delete_item_permanent"}:
+            path = str(args.get("path") or "").strip()
+        elif action in {"move_item", "rename_item"}:
+            path = str(args.get("destination") or args.get("source") or "").strip()
+        if path:
+            session_memory.set_last_file(path)
+
+    if parsed.intent == "OS_CONFIRMATION" and success:
+        operation = str(meta.get("operation") or "").strip()
+        if operation == "close_app":
+            app_name = str(meta.get("target") or meta.get("process_name") or "").strip()
+            if app_name:
+                session_memory.set_last_app(app_name)
+                session_memory.record_app_usage(app_name)
+        if operation in {"delete_item", "delete_item_permanent", "move_item", "rename_item", "create_directory", "file_info"}:
+            candidate_path = str(meta.get("path") or meta.get("destination") or meta.get("source") or "").strip()
+            if candidate_path:
+                session_memory.set_last_file(candidate_path)
+
+
+def _build_paginated_runtime_prompt(header_lines, options_page, *, page_index, total_pages, language):
+    lines = [str(line).strip() for line in (header_lines or []) if str(line or "").strip()]
+    for index, option in enumerate(options_page, start=1):
+        lines.append(f"{index}) {option.get('label')}")
+
+    if total_pages > 1:
+        lines.append(
+            render_template(
+                "clarification_page_indicator",
+                language,
+                page=int(page_index) + 1,
+                total_pages=int(total_pages),
+            )
+        )
+        if page_index < (total_pages - 1):
+            lines.append(render_template("reply_with_number_cancel_or_more", language))
+        else:
+            lines.append(render_template("reply_with_number_or_cancel", language))
+    else:
+        lines.append(render_template("reply_with_number_or_cancel", language))
+
+    return "\n".join(lines)
+
+
+def _build_runtime_page_prompts(all_options, header_lines, *, page_size, language):
+    size = max(1, int(page_size or 1))
+    pages = []
+    total_pages = max(1, (len(all_options) + size - 1) // size)
+    for page_index in range(total_pages):
+        start = page_index * size
+        page_options = all_options[start : start + size]
+        pages.append(
+            _build_paginated_runtime_prompt(
+                header_lines,
+                page_options,
+                page_index=page_index,
+                total_pages=total_pages,
+                language=language,
+            )
+        )
+    return pages
+
+
+def _build_app_runtime_clarification(app_query, candidates, *, operation="open"):
+    operation_mode = "close" if operation == "close" else "open"
+    intent = "OS_APP_CLOSE" if operation_mode == "close" else "OS_APP_OPEN"
+    option_prefix = "close_app_runtime" if operation_mode == "close" else "open_app_runtime"
+    language = session_memory.get_preferred_language()
+
+    all_options = []
+    for index, candidate in enumerate(candidates, start=1):
+        canonical = candidate.get("canonical_name") or candidate.get("executable")
+        executable = candidate.get("executable")
+        matched_alias = candidate.get("matched_alias") or ""
+        canonical_tokens = str(canonical).lower().split()
+        executable_tokens = str(executable).lower().replace(".exe", "").split()
+        alias_tokens = str(matched_alias).lower().split()
+        label = f"{canonical} ({executable})"
+        all_options.append(
+            {
+                "id": f"{option_prefix}_{index}",
+                "label": label,
+                "intent": intent,
+                "action": "",
+                "args": {"app_name": executable},
+                "reply_tokens": [
+                    str(index),
+                    str(canonical).lower(),
+                    str(executable).lower(),
+                    str(matched_alias).lower(),
+                    "app",
+                    "\u062a\u0637\u0628\u064a\u0642",
+                    *canonical_tokens,
+                    *executable_tokens,
+                    *alias_tokens,
+                ],
+            }
+        )
+
+    page_size = 3
+    header_lines = [
+        render_template("clarification_confidence_line", language, confidence_percent=58),
+        render_template(f"app_ambiguous_{operation_mode}_intro", language),
+    ]
+    page_prompts = _build_runtime_page_prompts(
+        all_options,
+        header_lines,
+        page_size=page_size,
+        language=language,
+    )
+    options = all_options[:page_size]
+    prompt = page_prompts[0] if page_prompts else render_template(f"app_ambiguous_{operation_mode}_intro", language)
+    payload = {
+        "reason": "app_close_ambiguous" if operation_mode == "close" else "app_name_ambiguous",
+        "prompt": prompt,
+        "options": options,
+        "all_options": all_options,
+        "page_size": page_size,
+        "page_index": 0,
+        "page_prompts": page_prompts,
+        "prompt_intro": render_template(f"app_ambiguous_{operation_mode}_intro", language),
+        "source_text": app_query,
+        "language": language,
+        "confidence": 0.58,
+        "entity_scores": {"app_name": 0.62},
+    }
+    return prompt, payload
+
+
+def _humanize_file_result(path: str, filename: str, language: str, offer_open: bool = False) -> str:
+    """Return a voice-friendly description of a search hit."""
+    loc = humanize_path(path)
+    lang_key = "ar" if language == "ar" else "en"
+    human = loc.get(lang_key) or loc.get("en") or path
+    if language == "ar":
+        msg = f"لقيت {human}"
+        if offer_open:
+            msg += " — تحب أفتحه؟"
+    else:
+        msg = f"Found {human}"
+        if offer_open:
+            msg += " — want me to open it?"
+    return msg
+
+
+def _build_file_search_runtime_clarification(filename, matches, *, action="file_info", extra_args=None):
+    language = session_memory.get_preferred_language()
+    all_options = []
+    for index, match in enumerate(matches, start=1):
+        if FILE_HUMANIZE_PATHS:
+            loc = humanize_path(match)
+            label = loc.get("ar") if language == "ar" else loc.get("en")
+            label = label or match
+        else:
+            label = match
+        option_args = {"path": match}
+        if extra_args:
+            option_args.update(extra_args)
+        all_options.append(
+            {
+                "id": f"file_match_{index}",
+                "label": label,
+                "intent": "OS_FILE_NAVIGATION",
+                "action": action,
+                "args": option_args,
+                "reply_tokens": [str(index), str(match).lower()],
+            }
+        )
+
+    page_size = 5
+    intro = render_template("file_ambiguous_intro", language, filename=filename)
+    header_lines = [
+        render_template("clarification_confidence_line", language, confidence_percent=60),
+        intro,
+    ]
+    page_prompts = _build_runtime_page_prompts(
+        all_options,
+        header_lines,
+        page_size=page_size,
+        language=language,
+    )
+    options = all_options[:page_size]
+    prompt = page_prompts[0] if page_prompts else intro
+    payload = {
+        "reason": "file_search_multiple_matches",
+        "prompt": prompt,
+        "options": options,
+        "all_options": all_options,
+        "page_size": page_size,
+        "page_index": 0,
+        "page_prompts": page_prompts,
+        "prompt_intro": intro,
+        "source_text": filename,
+        "language": language,
+        "confidence": 0.60,
+        "entity_scores": {"filename": 0.66},
+    }
+    return prompt, payload
+
+
+def _ensure_job_queue_executor():
+    global _JOB_QUEUE_EXECUTOR_READY
+    if _JOB_QUEUE_EXECUTOR_READY:
+        return
+    job_queue_service.configure_executor(_execute_job_command)
+    _JOB_QUEUE_EXECUTOR_READY = True
+
+
+def _execute_internal_command_text(command_text):
+    parsed = parse_command(command_text)
+    if parsed.intent == "OS_FILE_NAVIGATION" and parsed.action in {"delete_item", "delete_item_permanent", "move_item", "rename_item"}:
+        return False, "Risky file operations are not allowed in batch commit; run interactively."
+    if parsed.intent == "OS_APP_CLOSE":
+        return False, "Risky app-close operations are not allowed in batch commit; run interactively."
+    success, message, _meta = _dispatch(
+        parsed,
+        allow_batch=False,
+        allow_job_queue=False,
+        allow_llm=False,
+    )
+    return success, message
+
+
+def _execute_job_command(command_text):
+    parsed = parse_command(command_text)
+    if parsed.intent in {
+        "JOB_QUEUE_COMMAND",
+        "BATCH_COMMAND",
+        "OS_CONFIRMATION",
+        "OS_SYSTEM_COMMAND",
+        "VOICE_COMMAND",
+        "AUDIT_RESEAL",
+        "OS_APP_CLOSE",
+    }:
+        return False, f"Disallowed command for queued execution: {parsed.intent}"
+    if parsed.intent == "OS_FILE_NAVIGATION" and parsed.action in {"delete_item", "delete_item_permanent", "move_item", "rename_item"}:
+        return False, "Disallowed command for queued execution: risky file operation"
+    success, message, _meta = _dispatch(
+        parsed,
+        allow_batch=False,
+        allow_job_queue=False,
+        allow_llm=False,
+    )
+    return success, message
+
+
+def _dispatch(parsed, *, allow_batch=True, allow_job_queue=True, allow_llm=True, on_sentence=None):
+    logger.info("Command parsed: %s (%s)", parsed.intent, parsed.action or "no-action")
+    language = _infer_language_for_response(parsed, session_memory.get_preferred_language())
+    reply_language = resolve_reply_language(language, parsed)
+
+    if parsed.intent == "DEMO_MODE":
+        if parsed.action == "on":
+            set_demo_mode(True)
+            return True, "Demo mode enabled.", {}
+        if parsed.action == "off":
+            set_demo_mode(False)
+            return True, "Demo mode disabled.", {}
+        enabled = is_demo_mode_enabled()
+        return True, f"Demo mode is {'ON' if enabled else 'OFF'}.", {}
+
+    permission_key = _required_permission(parsed)
+    if permission_key and not policy_engine.is_command_allowed(permission_key):
+        return False, f"Command blocked by policy: {permission_key}", {}
+
+    if policy_engine.is_dry_run_mode() and _is_mutating_dry_run_candidate(parsed):
+        action_name = str(parsed.action or parsed.intent or "action").strip()
+        description = f"intent={parsed.intent}, action={action_name}"
+        return (
+            True,
+            render_template("dry_run_action_blocked", language, description=description),
+            {"dry_run": True, "intent": parsed.intent, "action": action_name},
+        )
+
+    if parsed.intent == "OS_CONFIRMATION":
+        token = parsed.args.get("token")
+        second_factor = parsed.args.get("second_factor")
+        ok, message, payload = confirmation_manager.confirm_with_second_factor(token, second_factor)
+        if not ok:
+            if "Second factor required" in message and token:
+                return (
+                    False,
+                    render_template(
+                        "confirmation_failed_with_usage",
+                        language,
+                        message=message,
+                        token=token,
+                    ),
+                    {},
+                )
+            return False, render_template("confirmation_failed", language, message=message), {}
+        return _execute_confirmed_payload(payload)
+
+    if parsed.intent == "OS_PIN_CONFIRM":
+        spoken_pin = str(parsed.args.get("pin") or "")
+        status, message, payload = confirmation_manager.verify_pin_and_execute(spoken_pin)
+        if status == "executed":
+            success, exec_message, exec_meta = _execute_confirmed_payload(payload)
+            return success, exec_message, exec_meta
+        if status == "wrong":
+            return False, render_template("pin_wrong", language), {}
+        if status == "locked":
+            return False, render_template("pin_locked", language, message=message), {}
+        return False, render_template("missing_pending_confirmation", language), {}
+
+    if parsed.intent == "OS_ROLLBACK":
+        ok, message = undo_last_action()
+        return ok, message, {}
+
+    if parsed.intent == "COMMAND_CHAIN":
+        return _execute_chained_commands(parsed.raw or parsed.normalized or "", language, on_sentence=on_sentence)
+
+    if parsed.intent == "OS_FILE_NAVIGATION_BATCH":
+        batch_result = handle_batch_file_operation(
+            parsed.action or "delete_multiple",
+            files=parsed.args.get("files", ""),
+            location=parsed.args.get("location", ""),
+            destination=parsed.args.get("destination", ""),
+        )
+        if batch_result.get("error"):
+            return False, str(batch_result.get("error") or "Batch operation failed."), {"phase4_batch": batch_result}
+        message = _format_batch_message(batch_result, language)
+        return True, message, {"phase4_batch": batch_result}
+
+    if parsed.intent == "OS_FILE_SEARCH_ADVANCED":
+        query = str(parsed.args.get("query") or parsed.args.get("filename") or parsed.raw or "").strip()
+        if not query:
+            return False, render_template("missing_filename_search", language), {}
+        root = parsed.args.get("search_path") or parsed.args.get("root") or get_current_directory()
+        search_result = handle_semantic_search(query, root=root)
+        message = _format_search_message(search_result, language)
+        return True, message, {"phase4_search": search_result}
+
+    if parsed.intent == "OS_FILE_SEARCH":
+        filename = parsed.args.get("filename", "")
+        if not filename:
+            return False, render_template("missing_filename_search", reply_language), {}
+        search_path_arg = parsed.args.get("search_path")
+        root = search_path_arg or get_current_directory()
+        # When the user said "افتح/open ملف X" (open intent), selecting a result
+        # should open it; if they just said "دور على/find" it shows file info.
+        _open_verb_re = re.compile(
+            r"^(?:افتح|فتح|شغّل|شغل|open|launch|run|start)\b", re.IGNORECASE | re.UNICODE
+        )
+        clarif_action = "open_file" if _open_verb_re.search(parsed.raw or "") else "file_info"
+        search_index_service.start()
+        indexed_results = search_index_service.search(filename, root=root)
+        if indexed_results:
+            if len(indexed_results) > 1:
+                prompt, payload = _build_file_search_runtime_clarification(
+                    filename, indexed_results, action=clarif_action
+                )
+                return True, prompt, {"indexed_search": True, "clarification_payload": payload}
+            hit = indexed_results[0]
+            msg = _humanize_file_result(hit, filename, reply_language, offer_open=True) if FILE_HUMANIZE_PATHS else hit
+            return True, msg, {"indexed_search": True, "resolved_file_path": hit}
+        results = find_files(filename, search_path=search_path_arg)
+        if not results:
+            return True, render_template("file_not_found", reply_language), {"indexed_search": False}
+        if len(results) == 1:
+            msg = _humanize_file_result(results[0], filename, reply_language, offer_open=True) if FILE_HUMANIZE_PATHS else results[0]
+            return True, msg, {"indexed_search": False, "resolved_file_path": results[0]}
+        # Multiple results: speak up to FILE_SPOKEN_RESULTS_MAX, offer more.
+        max_spoken = max(1, int(FILE_SPOKEN_RESULTS_MAX))
+        spoken = results[:max_spoken]
+        remaining = len(results) - len(spoken)
+        if FILE_HUMANIZE_PATHS:
+            parts = [_humanize_file_result(r, filename, reply_language) for r in spoken]
+        else:
+            parts = spoken
+        if remaining > 0:
+            prompt, payload = _build_file_search_runtime_clarification(
+                filename, results, action=clarif_action
+            )
+            return True, prompt, {"indexed_search": False, "clarification_payload": payload}
+        return True, "\n".join(parts), {"indexed_search": False}
+
+    if parsed.intent == "OS_FILE_NAVIGATION":
+        if parsed.action in {"open_in_explorer", "reveal_in_explorer", "open_file"}:
+            parsed.args["_language"] = language
+        nav_success, nav_message, nav_meta = file_navigation.handle(parsed)
+        if not nav_success and (nav_meta or {}).get("error_code") == "ambiguous_target":
+            candidates = (nav_meta or {}).get("candidates") or []
+            if candidates:
+                target_name = str(parsed.args.get("path") or "").strip()
+                extra_args = {"permanent": parsed.action == "delete_item_permanent"} if parsed.action in {"delete_item", "delete_item_permanent"} else None
+                prompt, payload = _build_file_search_runtime_clarification(
+                    target_name,
+                    candidates,
+                    action=parsed.action,
+                    extra_args=extra_args,
+                )
+                return True, prompt, {"clarification_payload": payload}
+        return nav_success, nav_message, nav_meta
+
+    if parsed.intent == "OS_APP_OPEN":
+        app_name = parsed.args.get("app_name", "")
+        if not app_name:
+            return False, render_template("missing_app_name_open", language), {}
+        app_name = _resolve_generic_app_preference(app_name)
+        resolution = resolve_app_request(app_name, operation="open")
+        if resolution.get("status") == "ambiguous":
+            prompt, payload = _build_app_runtime_clarification(
+                app_name,
+                resolution.get("candidates") or [],
+            )
+            return True, prompt, {"clarification_payload": payload}
+        open_result = open_app_result(app_name)
+        success, message, dispatch_meta = to_router_tuple(open_result)
+
+        # When the user said "play music on Spotify" (or similar) and we just
+        # opened a music app, give the app a moment to focus then send the
+        # global media play/pause key so Spotify actually starts playback.
+        if success and _looks_like_play_music_request(parsed.raw):
+            resolved_canonical = ""
+            try:
+                resolved_canonical = str(resolution.get("canonical_name") or app_name).strip()
+            except Exception:
+                resolved_canonical = app_name
+            if resolved_canonical and any(
+                marker.lower() in resolved_canonical.lower()
+                for marker in _MUSIC_APP_CANONICAL_NAMES
+            ):
+                import time as _time, threading as _threading
+
+                def _send_play_key():
+                    _time.sleep(2.0)  # let Spotify focus before media key fires
+                    try:
+                        request_system_command_result("media_play_pause")
+                    except Exception as exc:
+                        logger.debug("Auto play_music chain failed: %s", exc)
+
+                _threading.Thread(target=_send_play_key, daemon=True).start()
+                if dispatch_meta is None:
+                    dispatch_meta = {}
+                dispatch_meta = {**dispatch_meta, "play_music_chain": True}
+        return success, message, dispatch_meta
+
+    if parsed.intent == "OS_APP_CLOSE":
+        app_name = parsed.args.get("app_name", "")
+        if not app_name:
+            return False, render_template("missing_app_name_close", language), {}
+        resolution = resolve_app_request(app_name, operation="close")
+        if resolution.get("status") == "ambiguous":
+            prompt, payload = _build_app_runtime_clarification(
+                app_name,
+                resolution.get("candidates") or [],
+                operation="close",
+            )
+            return True, prompt, {"clarification_payload": payload}
+        return to_router_tuple(request_close_app_result(app_name))
+
+    if parsed.intent == "OS_SYSTEM_COMMAND":
+        action_key = str(parsed.args.get("action_key") or "").strip()
+        
+        # Validate: if action_key is empty, this is likely a false positive from semantic routing
+        # (e.g., "RISK AND EPS" incorrectly matched to OS_SYSTEM_COMMAND).
+        # Demote to LLM_QUERY for safety.
+        if not action_key:
+            logger.warning(
+                "OS_SYSTEM_COMMAND with empty action_key: '%s' — demoting to LLM_QUERY",
+                str(parsed.raw)[:100]
+            )
+            # Re-parse or demote to LLM_QUERY
+            parsed = ParsedCommand(
+                intent="LLM_QUERY",
+                raw=parsed.raw,
+                normalized=parsed.normalized,
+                action="",
+                args={},
+            )
+            # Continue to LLM handling below instead of returning error
+        elif action_key == "rescan_apps":
+            return to_router_tuple(refresh_app_catalog_result(force=True))
+        else:
+            return to_router_tuple(request_system_command_result(action_key, command_args=dict(parsed.args or {}), language=language))
+
+    if parsed.intent == "OS_SCREEN_DESCRIBE":
+        from os_control.screen_context import describe_screen_auto
+        from core.config import SCREEN_DESCRIBE_MAX_APPS
+        description = describe_screen_auto(language=language, max_apps=SCREEN_DESCRIBE_MAX_APPS)
+        return True, description, {}
+
+    if parsed.intent == "IDENTITY":
+        from core.identity import get_identity_reply
+        from core.persona import get_active_persona
+        return True, get_identity_reply(language, persona=get_active_persona()), {}
+
+    if parsed.intent == "OS_NOTE":
+        from os_control.note_ops import save_note
+        from core.config import NOTE_PENDING_TIMEOUT_SECONDS
+        body = str(parsed.args.get("body") or "").strip()
+        name = str(parsed.args.get("name") or "").strip() or None
+        if body:
+            return True, save_note(body, name=name, language=language), {}
+        # No inline body — ask for it and store a pending slot
+        ask_en = "What do you want me to write in it?"
+        ask_ar = "عايز أكتب فيها إيه؟"
+        prompt = ask_ar if language == "ar" else ask_en
+        session_memory.set_pending_clarification(
+            {
+                "reason": "missing_slot",
+                "intent": "OS_NOTE",
+                "action": "create",
+                "missing_slot": "body",
+                "args": {"name": name} if name else {},
+            },
+            ttl_seconds=NOTE_PENDING_TIMEOUT_SECONDS,
+        )
+        return True, prompt, {}
+
+    if parsed.intent == "OS_TIMER":
+        action = parsed.action or ""
+        # Semantic router may match OS_TIMER but leave action empty; re-parse the
+        # raw text to extract the structured action and duration.
+        if not action and parsed.raw:
+            _reparsed = parse_command(parsed.raw)
+            if _reparsed.intent == "OS_TIMER" and _reparsed.action:
+                action = _reparsed.action
+                parsed = _reparsed
+        if action == "set":
+            seconds = parsed.args.get("seconds")
+            if seconds is None:
+                return False, "مش قادر أفهم المدة." if language == "ar" else "Could not parse timer duration.", {}
+            label = parsed.args.get("label", "Timer")
+            return True, set_timer(seconds, label=label, language=language), {}
+        if action == "set_alarm":
+            alarm_time = str(parsed.args.get("alarm_time") or "").strip()
+            if not alarm_time:
+                return False, "مش قادر أفهم وقت المنبه." if language == "ar" else "Could not parse alarm time.", {}
+            label = parsed.args.get("label", "Alarm")
+            return True, set_alarm_at(alarm_time, label=label, language=language), {}
+        if action == "cancel":
+            label = str(parsed.args.get("label") or "").strip()
+            return True, cancel_timer(label=label or None, language=language), {}
+        if action == "list":
+            return True, list_timers(language=language), {}
+        # Last resort: open Windows Clock so the user can set the timer manually.
+        import subprocess
+        subprocess.Popen(["cmd", "/c", "start", "", "ms-clock:"], shell=False)
+        return True, "Opening Windows Clock — please set your timer there.", {}
+
+    if parsed.intent == "OS_REMINDER":
+        from os_control.reminder_ops import create_reminder, list_reminders, cancel_reminder
+        _rlang = "ar" if re.search(r"[؀-ۿ]", str(parsed.raw or "")) else "en"
+        if parsed.action == "create":
+            _msg = str(parsed.args.get("message") or "").strip()
+            _ts = str(parsed.args.get("time_str") or "").strip()
+            _recurrence = str(parsed.args.get("recurrence") or "").strip()
+            return True, create_reminder(_msg, _ts, language=_rlang, recurrence=_recurrence), {}
+        if parsed.action == "list":
+            return True, list_reminders(language=_rlang), {}
+        if parsed.action == "cancel":
+            _rid = str(parsed.args.get("reminder_id") or "").strip()
+            return True, cancel_reminder(_rid, language=_rlang), {}
+        return False, "Unknown reminder action.", {}
+
+    if parsed.intent == "OS_CLIPBOARD":
+        if parsed.action == "read":
+            return True, read_clipboard(), {}
+        if parsed.action == "write":
+            text = parsed.args.get("text", "")
+            if not text:
+                return False, "No text to copy.", {}
+            return True, write_clipboard(text), {}
+        if parsed.action == "clear":
+            return True, clear_clipboard(), {}
+        return False, "Unknown clipboard action.", {}
+
+    if parsed.intent == "OS_SYSINFO":
+        if parsed.action == "battery":
+            return True, get_battery_status(), {}
+        if parsed.action == "system":
+            return True, get_system_info(), {}
+        return True, get_system_info(), {}
+
+    if parsed.intent == "OS_EMAIL":
+        from core.config import EMAIL_ASK_DETAILS
+        to = parsed.args.get("to", "")
+        subject = parsed.args.get("subject", "")
+        body = parsed.args.get("body", "")
+        # Multi-turn details mode: if enabled and no details yet, walk through
+        # to -> body -> subject across turns via pending-task memory.
+        if EMAIL_ASK_DETAILS and not to and not subject and not body:
+            _missing_slot, question = _start_pending_task(
+                "OS_EMAIL", "draft", {"to": to, "subject": subject, "body": body}, language
+            )
+            if question:
+                return True, question, {}
+        return True, draft_email(to=to, subject=subject, body=body, language=language), {}
+
+    if parsed.intent == "OS_CALENDAR":
+        subject = parsed.args.get("subject", "New Event")
+        start_time = parsed.args.get("start_time", "")
+        duration = parsed.args.get("duration_minutes", 60)
+        if not start_time:
+            return False, "Please specify a time for the event.", {}
+        return True, create_calendar_event(subject, start_time, duration_minutes=duration), {}
+
+    if parsed.intent == "OS_SETTINGS":
+        page = parsed.args.get("page") or parsed.raw or ""
+        return True, open_settings_page(page), {}
+
+    if parsed.intent == "METRICS_REPORT":
+        return True, metrics.format_report(), {}
+
+    if parsed.intent == "AUDIT_LOG_REPORT":
+        limit = parsed.args.get("limit", 10)
+        return True, audit.format_audit_log(limit), {}
+
+    if parsed.intent == "AUDIT_VERIFY":
+        return True, audit.format_audit_verify(), {}
+
+    if parsed.intent == "AUDIT_RESEAL":
+        return True, audit.format_audit_reseal(), {}
+
+    if parsed.intent == "PERSONA_COMMAND":
+        return persona.handle(parsed)
+
+    if parsed.intent == "VOICE_COMMAND":
+        return voice.handle(parsed)
+
+    if parsed.intent == "KNOWLEDGE_BASE_COMMAND":
+        return knowledge_base.handle(parsed)
+
+    if parsed.intent == "MEMORY_COMMAND":
+        return memory.handle(parsed)
+
+    if parsed.intent == "OBSERVABILITY_REPORT":
+        return True, metrics.format_observability_report(), {}
+
+    if parsed.intent == "POLICY_COMMAND":
+        return policy.handle(parsed)
+
+    if parsed.intent == "BATCH_COMMAND":
+        if not allow_batch:
+            return False, "Nested batch commands are not allowed.", {}
+        return batch.handle(parsed, parse_command, _execute_internal_command_text)
+
+    if parsed.intent == "SEARCH_INDEX_COMMAND":
+        return search_index.handle(parsed)
+
+    if parsed.intent == "JOB_QUEUE_COMMAND":
+        if not allow_job_queue:
+            return False, "Nested job queue commands are not allowed.", {}
+        _ensure_job_queue_executor()
+        return job_queue_handler.handle(parsed)
+
+    if not allow_llm:
+        return False, "LLM fallback is disabled for this execution path.", {}
+
+    # LLM fallback — try live tool context first, then regular prompt
+    language = reply_language
+    query_words = len((parsed.raw or "").split())
+
+    # Phase 2: fetch live data for weather/news/search queries
+    tool_context = ""
+    try:
+        tool_context = _fetch_live_tool_context(parsed.raw)
+    except Exception as exc:
+        logger.warning("Live tool context fetch failed: %s", exc)
+
+    tool_augmented = bool(tool_context)
+
+    direct_live_answer = _direct_live_data_answer(parsed.raw, tool_context, language)
+    if direct_live_answer:
+        return (
+            True,
+            direct_live_answer,
+            {
+                "persona": persona_manager.get_profile(),
+                "kb_augmented": False,
+                "kb_sources": 0,
+                "memory_used": False,
+                "tool_augmented": tool_augmented,
+                "llm_lightweight": False,
+                "llm_cache_eligible": False,
+                "llm_cache_hit": False,
+                "llm_bypassed_with_live_data": True,
+            },
+        )
+
+    if tool_augmented:
+        package = build_tool_augmented_prompt(parsed.raw, tool_context, response_language=language, tier=get_runtime_model_tier())
+        use_lightweight = False
+    else:
+        has_memory_context = False
+        has_recent_context_fn = getattr(type(session_memory), "has_recent_context", None)
+        if callable(has_recent_context_fn):
+            has_memory_context = bool(session_memory.has_recent_context(language=language, intents={"LLM_QUERY"}))
+        else:
+            has_memory_context = bool(
+                session_memory.build_context(max_chars=1, language=language, intents={"LLM_QUERY"})
+            )
+        use_lightweight = query_words <= 8 and not has_memory_context
+        if use_lightweight:
+            package = build_lightweight_prompt(parsed.raw, response_language=language, tier=get_runtime_model_tier())
+        else:
+            package = build_prompt_package(parsed.raw, response_language=language, tier=get_runtime_model_tier())
+
+    cache_eligible = (
+        bool(LLM_RESPONSE_CACHE_ENABLED)
+        and bool(use_lightweight)
+        and not tool_augmented
+        and int(query_words) <= max(1, int(LLM_RESPONSE_CACHE_MAX_QUERY_WORDS or 8))
+        and not bool(package.get("kb_context_used"))
+        and not bool(package.get("memory_used"))
+    )
+
+    # Inject voice constraint suffix before the ASSISTANT: marker.
+    # This steers the LLM toward 1-4 natural spoken sentences with no markdown.
+    if RESPONSE_SHAPER_ENABLED:
+        _voice_suffix = response_shaper.get_prompt_suffix(parsed.intent, tool_augmented, language)
+        if _voice_suffix:
+            package = {**package, "prompt": response_shaper.inject_suffix_into_prompt(package["prompt"], _voice_suffix)}
+
+    cache_hit = False
+    response = ""
+    stream_callback = on_sentence
+    if stream_callback and parsed.intent == "LLM_QUERY":
+        # Phase 1.5 fix: only apply text-level Egyptian-dialect shaping per sentence.
+        # Mid-stream "quality repair" was replacing already-spoken sentences with a
+        # completely different fallback — incoherent on TTS. Quality is now gated
+        # on the FULL response in _finalize_success_response after streaming ends.
+        def _stream_callback(sentence):
+            shaped = _apply_egyptian_dialect_style(sentence, parsed, language)
+            if _is_response_language_mismatch(shaped, language):
+                _log_llm_language_mismatch(shaped, language)
+                return
+            stream_callback(shaped)
+
+    else:
+        _stream_callback = stream_callback
+
+    if cache_eligible:
+        response = str(_cache_get_llm_response(parsed.raw, language, package.get("tier")) or "").strip()
+        cache_hit = bool(response)
+        if cache_hit and _stream_callback:
+            try:
+                _stream_callback(response)
+            except Exception:
+                pass
+
+    llm_num_ctx = int(package.get("num_ctx") or 0) or (
+        int(get_runtime_lightweight_num_ctx(default=LLM_LIGHTWEIGHT_NUM_CTX))
+        if use_lightweight
+        else None
+    )
+    if tool_augmented and not use_lightweight:
+        llm_num_ctx = min(
+            int(llm_num_ctx or get_runtime_num_ctx(default=LLM_LIGHTWEIGHT_NUM_CTX)),
+            768,
+        )
+    if not cache_hit:
+        if LLM_BACKEND == "claude":
+            from llm.claude_client import ask_claude_streaming
+            _claude_msgs = build_claude_messages(
+                parsed.raw,
+                response_language=language,
+                use_memory=not use_lightweight,
+                use_kb=not use_lightweight,
+                tier=get_runtime_model_tier(),
+            )
+            response = (
+                ask_claude_streaming(
+                    _claude_msgs["system"],
+                    _claude_msgs["user"],
+                    on_sentence=_stream_callback,
+                    is_arabic=(language == "ar"),
+                    prior_messages=_claude_msgs.get("prior_messages"),
+                )
+                or ""
+            ).strip()
+            _claude_kb_sources = _claude_msgs.get("kb_sources", [])
+            if LLM_APPEND_SOURCE_CITATIONS and _claude_kb_sources:
+                response += _format_source_citations(_claude_kb_sources)
+            if cache_eligible and response:
+                _cache_put_llm_response(parsed.raw, language, response, package.get("tier"))
+        else:
+            response = (
+                ask_llm_streaming(
+                    package["prompt"],
+                    on_sentence=_stream_callback,
+                    num_ctx=llm_num_ctx,
+                    is_arabic=(language == "ar"),
+                )
+                or ""
+            ).strip()
+            if LLM_APPEND_SOURCE_CITATIONS and package["kb_sources"]:
+                response += _format_source_citations(package["kb_sources"])
+            if cache_eligible and response:
+                _cache_put_llm_response(parsed.raw, language, response, package.get("tier"))
+
+    _log_llm_language_mismatch(response, language)
+    return (
+        True,
+        response,
+        {
+            "persona": persona_manager.get_profile(),
+            "kb_augmented": package["kb_context_used"],
+            "kb_sources": len(package["kb_sources"]),
+            "memory_used": package["memory_used"],
+            "tool_augmented": tool_augmented,
+            "llm_lightweight": use_lightweight,
+            "llm_cache_eligible": cache_eligible,
+            "llm_cache_hit": cache_hit,
+        },
+    )
+
+
+def _format_demo_output(parsed, success, message, meta):
+    if not is_demo_mode_enabled() or parsed.intent == "DEMO_MODE":
+        return message
+
+    latest = read_recent_actions(limit=1)
+    audit_row = latest[0] if latest else {}
+
+    lines = [
+        "[DEMO MODE]",
+        "PLAN:",
+        f"- intent: {parsed.intent}",
+        f"- action: {parsed.action or 'n/a'}",
+        f"- args: {parsed.args if parsed.args else '{}'}",
+    ]
+    if meta.get("language"):
+        lines.append(f"- language: {meta.get('language')}")
+    if meta.get("intent_confidence") is not None:
+        lines.append(f"- intent_confidence: {float(meta.get('intent_confidence')):.2f}")
+    if meta.get("nlu_used"):
+        nlu_conf = float(meta.get("nlu_confidence") or 0.0)
+        nlu_thr = float(meta.get("nlu_threshold") or NLU_INTENT_CONFIDENCE_THRESHOLD)
+        nlu_status = "accepted" if meta.get("nlu_accepted") else "fallback"
+        cache_tag = "hit" if meta.get("nlu_cache_hit") else "miss"
+        lines.append(f"- nlu: {nlu_status} ({nlu_conf:.2f}/{nlu_thr:.2f}) cache={cache_tag}")
+    elif meta.get("nlu_fastpath"):
+        lines.append("- nlu: parser_fastpath")
+    if meta.get("nlp_used"):
+        nlp_conf = float(meta.get("nlp_confidence") or 0.0)
+        nlp_intent = str(meta.get("nlp_intent") or "unknown")
+        nlp_status = "accepted" if meta.get("nlp_accepted") else "fallback"
+        lines.append(f"- nlp: {nlp_status} ({nlp_intent} {nlp_conf:.2f})")
+    if meta.get("entity_scores"):
+        lines.append(f"- entity_scores: {meta.get('entity_scores')}")
+    if meta.get("clarification_resolved"):
+        lines.append("- clarification: resolved")
+    lines.extend(
+        [
+            "CONFIRM:",
+            f"- required: {'yes' if meta.get('requires_confirmation') else 'no'}",
+        ]
+    )
+    if meta.get("token"):
+        lines.append(f"- token: {meta.get('token')}")
+    if meta.get("second_factor"):
+        lines.append("- second_factor: required")
+    if meta.get("persona"):
+        lines.append(f"- persona: {meta.get('persona')}")
+    if meta.get("kb_augmented"):
+        lines.append(f"- kb_sources: {meta.get('kb_sources', 0)}")
+    if meta.get("memory_used"):
+        lines.append("- memory: used")
+
+    lines.extend(
+        [
+            "EXECUTE:",
+            f"- status: {'success' if success else 'failed'}",
+            f"- result: {message}",
+            "AUDIT:",
+        ]
+    )
+    if audit_row:
+        lines.append(f"- id: {audit_row.get('id')}")
+        lines.append(f"- action: {audit_row.get('action_type')} ({audit_row.get('status')})")
+        lines.append(f"- hash: {audit_row.get('hash')}")
+    else:
+        lines.append("- no audit row found")
+    return "\n".join(lines)
+
+
+def _execute_followup_multi_actions(actions):
+    responses = []
+    any_success = False
+
+    for item in list(actions or []):
+        parsed = ParsedCommand(
+            intent=str(item.get("intent") or "LLM_QUERY"),
+            raw="",
+            normalized="",
+            action=str(item.get("action") or ""),
+            args=dict(item.get("args") or {}),
+        )
+        success, response, dispatch_meta = _dispatch(parsed)
+        meta = {"language": session_memory.get_preferred_language()}
+        if dispatch_meta:
+            meta.update(dispatch_meta)
+        _update_short_term_context(parsed, success, response, meta)
+        any_success = any_success or bool(success)
+        if response:
+            responses.append(str(response))
+
+    joined = "\n".join([row for row in responses if row.strip()]).strip()
+    if not joined:
+        joined = "Multi-action follow-up completed." if any_success else "Multi-action follow-up failed."
+
+    return any_success, joined
+
+
+def route_command(
+    text,
+    detected_language=None,
+    realtime=False,
+    on_sentence=None,
+    precomputed_language_result=None,
+    precomputed_parser_candidate=None,
+):
+    original_text = text or ""
+    start = time.perf_counter()
+    forced_language = _normalize_supported_language_tag(detected_language)
+    if looks_romanized_arabic(original_text):
+        forced_language = "ar"
+    script_hint = detect_language_hint(original_text, fallback="")
+    if forced_language and script_hint in {"ar", "en"} and forced_language != script_hint:
+        forced_language = ""
+
+    language_result = precomputed_language_result
+    if language_result is None:
+        with stage_timer("normalize"):
+            language_result = detect_supported_language(
+                original_text,
+                previous_language=forced_language or session_memory.get_preferred_language(),
+            )
+    if forced_language:
+        language_result = language_result.__class__(
+            supported=True,
+            language=forced_language,
+            normalized_text=language_result.normalized_text or " ".join(str(original_text or "").split()),
+            reason="stt_detected_language",
+        )
+    if not language_result.supported:
+        latency = time.perf_counter() - start
+        metrics.record_command("LANGUAGE_GATE_BLOCK", False, latency, language="unsupported")
+        log_structured(
+            "route_language_gate_block",
+            level="warning",
+            text=_truncate_text(original_text),
+            reason=language_result.reason,
+            latency_ms=latency * 1000.0,
+        )
+        log_action(
+            "language_gate_block",
+            "blocked",
+            details={
+                "text": original_text,
+                "reason": language_result.reason,
+            },
+        )
+        return UNSUPPORTED_LANGUAGE_MESSAGE
+
+    effective_text = language_result.normalized_text or original_text
+    session_memory.set_preferred_language(language_result.language)
+    session_memory.record_language_turn(language_result.language)
+
+    if (
+        SENSITIVE_CONFIRM_MODE == "pin"
+        and session_memory.get_pending_confirmation_token() == "pin_required"
+        and confirmation_manager.has_pending_pin_action()
+    ):
+        pin_parsed = try_parse_pin_confirm(effective_text) or try_parse_pin_confirm(original_text)
+        if pin_parsed is not None:
+            pin_parsed.raw = original_text
+            try:
+                success, response, dispatch_meta = _dispatch(pin_parsed)
+            except Exception as exc:
+                logger.error("PIN confirmation dispatch failed: %s", exc)
+                success, response, dispatch_meta = False, "Sorry, I had an internal error.", {}
+            latency = time.perf_counter() - start
+            meta = {"language": language_result.language}
+            if dispatch_meta:
+                meta.update(dispatch_meta)
+            metrics.record_command("OS_PIN_CONFIRM", success, latency, language=language_result.language)
+            _update_short_term_context(pin_parsed, success, response, meta)
+            return response
+
+    mode_toggle_message = _try_handle_response_mode_toggle(effective_text, language_result.language)
+    if mode_toggle_message:
+        latency = time.perf_counter() - start
+        metrics.record_command("RESPONSE_MODE_COMMAND", True, latency, language=language_result.language)
+        return mode_toggle_message
+
+    tone_meta = _analyze_tone_markers(original_text, language=language_result.language)
+
+    if MEMORY_REF_SHADOW:
+        # Phase 9 shadow rollout: compute the rewrite for observability only —
+        # log what would have happened, but route on the original text.
+        shadow_text, shadow_meta = _rewrite_followup_command(
+            effective_text,
+            language=language_result.language,
+        )
+        if shadow_text != effective_text or shadow_meta:
+            get_logger("memory").info(
+                "memory_ref_shadow: %r -> %r (%s)",
+                effective_text,
+                shadow_text,
+                shadow_meta.get("followup_rewrite") or shadow_meta.get("followup_blocked") or "unchanged",
+            )
+        followup_meta = {}
+    else:
+        effective_text, followup_meta = _rewrite_followup_command(
+            effective_text,
+            language=language_result.language,
+        )
+
+    if followup_meta.get("followup_cancel_confirmation"):
+        token = str(followup_meta.get("token") or "").strip().lower()
+        if token == "pin_required":
+            ok, _cancel_message = confirmation_manager.cancel_pending_pin()
+        else:
+            ok, _cancel_message = confirmation_manager.cancel(token)
+        session_memory.clear_pending_confirmation_token()
+        if ok:
+            return render_template("confirmation_cancelled", language_result.language)
+        return render_template("missing_pending_confirmation", language_result.language)
+
+    task_handled, task_response = _advance_pending_task(effective_text, language_result.language)
+    if task_handled:
+        latency = time.perf_counter() - start
+        metrics.record_command("OS_EMAIL", True, latency, language=language_result.language)
+        return task_response
+
+    forced_parsed = None
+    pending = session_memory.get_pending_clarification()
+
+    # Slot-fill handler: if the previous turn asked a missing-slot question,
+    # treat the current utterance as the slot value and re-dispatch.
+    if pending and pending.get("reason") == "missing_slot":
+        missing_slot = str(pending.get("missing_slot") or "")
+        saved_intent = str(pending.get("intent") or "LLM_QUERY")
+        saved_action = str(pending.get("action") or "")
+        saved_args = dict(pending.get("args") or {})
+        slot_attempts = int(pending.get("attempts") or 0)
+
+        # Duration-shaped slots need an actual parseable value — unlike
+        # app_name/path/filename, falling back to the raw utterance text
+        # ("banana") is meaningless and would dispatch garbage downstream.
+        duration_slots = {"seconds", "time_str"}
+        resolved_value = None
+        if missing_slot in duration_slots:
+            resolved_value = parse_duration_from_text(effective_text)
+        elif missing_slot and _nlu_understand is not None:
+            _slot_result = _nlu_understand(
+                effective_text,
+                language_result.language,
+                intent=saved_intent,
+                existing_args=saved_args,
+            )
+            saved_args.update(_slot_result.entities)
+            resolved_value = _slot_result.entities.get(missing_slot) or effective_text.strip()
+        elif missing_slot:
+            resolved_value = effective_text.strip()
+
+        if missing_slot and not resolved_value and slot_attempts + 1 < CLARIFY_MAX_ROUNDS:
+            # Re-prompt for the same slot rather than dispatching garbage.
+            slot_attempts += 1
+            reprompt = pending.get("prompt") or _build_slot_question(
+                saved_intent, missing_slot, language_result.language
+            )
+            pending["attempts"] = slot_attempts
+            session_memory.set_pending_clarification(pending)
+            latency = time.perf_counter() - start
+            metrics.record_command("SLOT_FILLING", False, latency, language=language_result.language)
+            log_structured(
+                "route_slot_fill_reprompt",
+                level="info",
+                language=language_result.language,
+                intent=saved_intent,
+                missing_slot=missing_slot,
+                attempts=slot_attempts,
+                latency_ms=latency * 1000.0,
+                user_text=_truncate_text(original_text),
+            )
+            return reprompt
+
+        session_memory.clear_pending_clarification()
+
+        if missing_slot and not resolved_value:
+            # Exhausted CLARIFY_MAX_ROUNDS without a usable value — stop
+            # looping and let the LLM handle it as an open query instead.
+            gave_up_parsed = ParsedCommand(
+                intent="LLM_QUERY",
+                raw=original_text,
+                normalized=" ".join(effective_text.lower().split()).strip(),
+                action="",
+                args={},
+            )
+            try:
+                success, response, dispatch_meta = _dispatch(gave_up_parsed, on_sentence=on_sentence)
+            except Exception as exc:
+                logger.error("Slot-fill give-up dispatch failed: %s", exc)
+                success, response, dispatch_meta = False, "Sorry, I had an internal error.", {}
+            latency = time.perf_counter() - start
+            meta = {"language": language_result.language, "slot_fill_gave_up": True}
+            if dispatch_meta:
+                meta.update(dispatch_meta)
+            metrics.record_command(gave_up_parsed.intent, success, latency, language=language_result.language)
+            _update_short_term_context(gave_up_parsed, success, response, meta)
+            if success and _should_store_turn(gave_up_parsed, response):
+                session_memory.add_turn(original_text, response, language=language_result.language, intent=gave_up_parsed.intent)
+            return _format_demo_output(gave_up_parsed, success, response, meta)
+
+        if missing_slot == "seconds":
+            saved_args["seconds"] = resolved_value
+        elif missing_slot:
+            saved_args[missing_slot] = resolved_value
+        filled_parsed = ParsedCommand(
+            intent=saved_intent,
+            raw=original_text,
+            normalized=" ".join(effective_text.lower().split()).strip(),
+            action=saved_action,
+            args=saved_args,
+        )
+        try:
+            success, response, dispatch_meta = _dispatch(filled_parsed, on_sentence=on_sentence)
+        except Exception as exc:
+            logger.error("Slot-fill dispatch failed: %s", exc)
+            success, response, dispatch_meta = False, "Sorry, I had an internal error.", {}
+        latency = time.perf_counter() - start
+        meta = {"language": language_result.language, "slot_fill_resolved": True}
+        if dispatch_meta:
+            meta.update(dispatch_meta)
+        metrics.record_command(filled_parsed.intent, success, latency, language=language_result.language)
+        _update_short_term_context(filled_parsed, success, response, meta)
+        if success:
+            response = _finalize_success_response(
+                response, filled_parsed, language_result.language, original_text, tone_meta, realtime=realtime,
+            )
+            if _should_store_turn(filled_parsed, response):
+                session_memory.add_turn(original_text, response, language=language_result.language, intent=filled_parsed.intent)
+        return _format_demo_output(filled_parsed, success, response, meta)
+
+    # Semantic near-tie handler: the previous turn asked "did you mean X or Y?"
+    # (Phase 3 margin scoring + Phase 6 clarification). Resolve the reply
+    # against the two candidate intents via the existing option-resolution
+    # machinery, then re-parse the ORIGINAL ambiguous text with the chosen
+    # intent as a hint — same pattern _try_semantic_routing uses.
+    if pending and pending.get("reason") == "semantic_ambiguous":
+        candidates = list(pending.get("candidates") or [])
+        options = [
+            {
+                "id": str(name).lower(),
+                "label": clarification_builder.intent_label(name, language_result.language),
+                "intent": name,
+                "action": "",
+                "args": {},
+                "reply_tokens": [str(name).lower()],
+            }
+            for name, _score in candidates
+        ]
+        resolution = resolve_clarification_reply(effective_text, {**pending, "options": options})
+
+        if resolution.status == "cancelled":
+            session_memory.clear_pending_clarification()
+            return resolution.message
+
+        if resolution.status == "resolved" and resolution.option:
+            session_memory.clear_pending_clarification()
+            chosen_intent = str(resolution.option.get("intent") or "LLM_QUERY")
+            ambiguous_source_text = str(pending.get("source_text") or original_text)
+            reparsed = parse_command(ambiguous_source_text)
+            reparsed_intent = str(getattr(reparsed, "intent", "") or "").strip().upper()
+            if reparsed_intent == chosen_intent:
+                resolved_parsed = reparsed
+            else:
+                resolved_parsed = ParsedCommand(
+                    intent=chosen_intent,
+                    raw=ambiguous_source_text,
+                    normalized=" ".join(ambiguous_source_text.lower().split()).strip(),
+                )
+            try:
+                success, response, dispatch_meta = _dispatch(resolved_parsed, on_sentence=on_sentence)
+            except Exception as exc:
+                logger.error("Semantic-ambiguity dispatch failed: %s", exc)
+                success, response, dispatch_meta = False, "Sorry, I had an internal error.", {}
+            latency = time.perf_counter() - start
+            meta = {"language": language_result.language, "clarification_resolved": True}
+            if dispatch_meta:
+                meta.update(dispatch_meta)
+            metrics.record_command(resolved_parsed.intent, success, latency, language=language_result.language)
+            _update_short_term_context(resolved_parsed, success, response, meta)
+            if success:
+                response = _finalize_success_response(
+                    response, resolved_parsed, language_result.language, original_text, tone_meta, realtime=realtime,
+                )
+                if _should_store_turn(resolved_parsed, response):
+                    session_memory.add_turn(original_text, response, language=language_result.language, intent=resolved_parsed.intent)
+            return _format_demo_output(resolved_parsed, success, response, meta)
+
+        # needs_clarification / not_a_reply — re-prompt up to CLARIFY_MAX_ROUNDS.
+        attempts = int(pending.get("attempts") or 0) + 1
+        if attempts >= CLARIFY_MAX_ROUNDS:
+            session_memory.clear_pending_clarification()
+            pending = None
+        else:
+            pending["attempts"] = attempts
+            session_memory.set_pending_clarification(pending)
+            return resolution.message or pending.get("prompt") or ""
+
+    if not pending:
+        recent_resolution = session_memory.recent_clarification_resolution(
+            max_age_seconds=CLARIFICATION_CORRECTION_WINDOW_SECONDS
+        )
+        if recent_resolution and _looks_like_post_clarification_correction(
+            effective_text,
+            language=language_result.language,
+        ):
+            metrics.record_clarification_event(
+                "post_correction",
+                intent=recent_resolution.get("intent") or "INTENT_CLARIFICATION",
+                language=language_result.language,
+                reason=recent_resolution.get("reason") or "clarification_correction",
+                source_text=original_text,
+            )
+
+    if pending:
+        pending_candidate = parse_command(effective_text)
+        pending_candidate.raw = original_text
+        if _should_bypass_pending_clarification(
+            pending_candidate,
+            pending_payload=pending,
+            source_text=effective_text,
+        ):
+            session_memory.clear_pending_clarification()
+            pending = None
+            forced_parsed = pending_candidate
+
+    if pending:
+        resolution = resolve_clarification_reply(effective_text, pending)
+        pending_reason = str(pending.get("reason") or "")
+        pending_source_text = str(pending.get("source_text") or original_text)
+        pending_intent = _clarification_intent_from_payload(pending)
+        pending_attempts = int(pending.get("attempts") or 0)
+        if resolution.status == "cancelled":
+            session_memory.clear_pending_clarification()
+            latency = time.perf_counter() - start
+            metrics.record_command("INTENT_CLARIFICATION", True, latency, language=language_result.language)
+            metrics.record_clarification_event(
+                "cancelled",
+                intent=pending_intent,
+                language=language_result.language,
+                reason=pending_reason,
+                source_text=pending_source_text,
+                retry_count=pending_attempts,
+            )
+            log_structured(
+                "route_clarification_cancelled",
+                language=language_result.language,
+                latency_ms=latency * 1000.0,
+                source_text=_truncate_text(pending.get("source_text") or original_text),
+            )
+            log_action(
+                "intent_clarification_cancelled",
+                "success",
+                details={"source_text": pending.get("source_text"), "language": language_result.language},
+            )
+            return resolution.message or render_template("clarification_cancelled", language_result.language)
+
+        if resolution.status == "next_page":
+            updated_payload = dict(resolution.updated_payload or pending)
+            updated_payload["attempts"] = pending_attempts
+            updated_payload["fallback_hint_sent"] = bool(pending.get("fallback_hint_sent"))
+            session_memory.set_pending_clarification(updated_payload)
+
+            latency = time.perf_counter() - start
+            metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+            metrics.record_clarification_event(
+                "reprompt",
+                intent=pending_intent,
+                language=language_result.language,
+                reason=pending_reason,
+                source_text=pending_source_text,
+                retry_count=pending_attempts,
+            )
+            log_structured(
+                "route_clarification_next_page",
+                language=language_result.language,
+                latency_ms=latency * 1000.0,
+                source_text=_truncate_text(pending.get("source_text") or original_text),
+                page_index=int(updated_payload.get("page_index") or 0),
+            )
+            return resolution.message or updated_payload.get("prompt") or pending.get("prompt") or render_template(
+                "please_clarify_intent",
+                language_result.language,
+            )
+
+        if resolution.status == "resolved":
+            session_memory.clear_pending_clarification()
+            option = resolution.option or {}
+            session_memory.remember_clarification_choice(
+                pending_reason,
+                pending_source_text,
+                option,
+                language=language_result.language,
+            )
+            resolved_action = option.get("action", "")
+            # If the reply itself contained an open verb ("open number one",
+            # "افتح الأول") and the option was baked with file_info (because
+            # the original search used "find/دور"), upgrade to open_file so
+            # the file actually opens instead of showing metadata.
+            if resolved_action == "file_info" and pending_reason == "file_search_multiple_matches":
+                _reply_open_re = re.compile(
+                    r"\b(?:open|افتح|فتح|شغل|launch|run|start)\b",
+                    re.IGNORECASE | re.UNICODE,
+                )
+                if _reply_open_re.search(original_text):
+                    resolved_action = "open_file"
+            parsed = ParsedCommand(
+                intent=option.get("intent", "LLM_QUERY"),
+                raw=original_text,
+                normalized=" ".join(effective_text.lower().split()).strip(),
+                action=resolved_action,
+                args=dict(option.get("args") or {}),
+            )
+            success = False
+            response = ""
+            meta = {
+                "language": language_result.language,
+                "intent_confidence": pending.get("confidence"),
+                "clarification_resolved": True,
+                "entity_scores": pending.get("entity_scores") or {},
+            }
+            try:
+                success, response, dispatch_meta = _dispatch(parsed)
+                if dispatch_meta:
+                    meta.update(dispatch_meta)
+            except Exception as exc:
+                logger.error("Command routing failed after clarification: %s", exc)
+                response = "Sorry, I had an internal error."
+                success = False
+
+            _update_short_term_context(parsed, success, response, meta)
+            session_memory.mark_clarification_resolution(reason=pending_reason, intent=parsed.intent)
+            latency = time.perf_counter() - start
+            metrics.record_command(parsed.intent, success, latency, language=language_result.language)
+            metrics.record_clarification_event(
+                "resolved" if success else "resolved_failed",
+                intent=parsed.intent,
+                language=language_result.language,
+                reason=pending_reason,
+                source_text=pending_source_text,
+                retry_count=pending_attempts,
+                wrong_action_prevented=_is_wrong_action_prevented_reason(pending_reason),
+            )
+            log_structured(
+                "route_command_result",
+                language=language_result.language,
+                intent=parsed.intent,
+                action=parsed.action or "",
+                success=bool(success),
+                latency_ms=latency * 1000.0,
+                confidence=float(meta.get("intent_confidence") or 0.0),
+                clarified=True,
+                user_text=_truncate_text(original_text),
+                response_preview=_truncate_text(response),
+            )
+            if success:
+                response = _finalize_success_response(
+                    response,
+                    parsed,
+                    language_result.language,
+                    original_text,
+                    tone_meta,
+                    realtime=realtime,
+                )
+                if _should_store_turn(parsed, response):
+                    session_memory.add_turn(
+                        original_text,
+                        response,
+                        language=language_result.language,
+                        intent=parsed.intent,
+                    )
+            return _format_demo_output(parsed, success, response, meta)
+
+        if resolution.status in {"needs_clarification", "not_a_reply"}:
+            pending["attempts"] = pending_attempts + 1
+            fallback_after = max(1, int(CLARIFICATION_FALLBACK_AFTER_MISSES or 1))
+            send_fallback_hint = pending["attempts"] >= fallback_after and not pending.get("fallback_hint_sent")
+            pending["fallback_hint_sent"] = bool(pending.get("fallback_hint_sent") or send_fallback_hint)
+            session_memory.set_pending_clarification(pending)
+
+            latency = time.perf_counter() - start
+            metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+            metrics.record_clarification_event(
+                "reprompt",
+                intent=pending_intent,
+                language=language_result.language,
+                reason=pending_reason,
+                source_text=pending_source_text,
+                retry_count=int(pending.get("attempts") or 0),
+            )
+            log_structured(
+                "route_clarification_reprompt",
+                level="warning",
+                language=language_result.language,
+                latency_ms=latency * 1000.0,
+                source_text=_truncate_text(pending.get("source_text") or original_text),
+            )
+
+            base_message = (
+                resolution.message
+                or pending.get("prompt")
+                or render_template("please_clarify_intent", language_result.language)
+            )
+            if send_fallback_hint:
+                if pending_reason == "low_confidence_unclear_query":
+                    fallback_hint = render_template("clarification_retry_unclear_query", language_result.language)
+                else:
+                    fallback_hint = render_template("clarification_retry_with_examples", language_result.language)
+                return f"{fallback_hint}\n{base_message}" if base_message else fallback_hint
+            return base_message
+
+        session_memory.clear_pending_clarification()
+
+    if followup_meta.get("followup_multi_actions"):
+        success, response = _execute_followup_multi_actions(followup_meta.get("followup_multi_actions"))
+        latency = time.perf_counter() - start
+        metrics.record_command("BATCH_COMMAND", success, latency, language=language_result.language)
+        if success:
+            parsed_for_memory = ParsedCommand(intent="BATCH_COMMAND", raw=original_text, normalized="", action="", args={})
+            response = _finalize_success_response(
+                response,
+                parsed_for_memory,
+                language_result.language,
+                original_text,
+                tone_meta,
+                realtime=realtime,
+            )
+            if _should_store_turn(parsed_for_memory, response):
+                session_memory.add_turn(
+                    original_text,
+                    response,
+                    language=language_result.language,
+                    intent=parsed_for_memory.intent,
+                )
+        return response
+
+    if followup_meta.get("followup_blocked"):
+        return str(followup_meta.get("followup_message") or "")
+
+    if followup_meta.get("followup_continue_previous"):
+        forced_parsed = ParsedCommand(
+            intent="LLM_QUERY",
+            raw=original_text,
+            normalized=" ".join(effective_text.lower().split()).strip(),
+            action="",
+            args={},
+        )
+
+    parsed = forced_parsed
+    if forced_parsed is not None or precomputed_parser_candidate is not None:
+        parser_candidate = forced_parsed or precomputed_parser_candidate
+    else:
+        with stage_timer("parser"):
+            parser_candidate = parse_command(effective_text)
+    parser_candidate.raw = original_text
+
+    explanatory_llm_query = _looks_like_explanatory_llm_query(original_text)
+    if explanatory_llm_query:
+        parser_candidate = ParsedCommand(
+            intent="LLM_QUERY",
+            raw=original_text,
+            normalized=" ".join(str(effective_text or "").lower().split()).strip(),
+            action="",
+            args={},
+        )
+        parsed = parser_candidate if forced_parsed is not None else None
+
+    # Quick-calc fast path: resolve math expressions before any routing tier or LLM.
+    # Only runs when the parser didn't recognise a structured command (LLM_QUERY).
+    if parsed is None and str(getattr(parser_candidate, "intent", "") or "") in ("LLM_QUERY", ""):
+        try:
+            from tools.calculator import quick_calc, to_arabic_numerals
+            _calc_result = quick_calc(effective_text)
+            if _calc_result is not None:
+                _lang = language_result.language
+                if _lang == "ar":
+                    _ar = to_arabic_numerals(_calc_result)
+                    _calc_response = f"الإجابة هي {_ar}."
+                else:
+                    _calc_response = f"The answer is {_calc_result}."
+                latency = time.perf_counter() - start
+                metrics.record_command("QUICK_CALC", True, latency, language=_lang)
+                return _calc_response
+        except Exception:
+            pass
+
+    parser_fastpath_assessment = None
+    nlu_meta = {
+        "nlu_fastpath": False,
+        "nlu_skipped_for_llm_query": False,
+        "codeswitch_used": False,
+        "codeswitch_accepted": False,
+        "semantic_used": False,
+        "semantic_accepted": False,
+        "semantic_intent": "",
+        "semantic_confidence": 0.0,
+        "nlp_used": False,
+        "nlp_accepted": False,
+        "nlp_intent": "",
+        "nlp_confidence": 0.0,
+        "nlp_matched_keywords": [],
+    }
+
+    if parsed is None and NLU_INTENT_ROUTING_ENABLED and not explanatory_llm_query:
+        # Tier 1 fast-path: high-confidence regex parser match
+        parser_fastpath_assessment = _select_parser_fastpath_assessment(
+            original_text,
+            parser_candidate,
+            language_result.language,
+        )
+        if parser_fastpath_assessment is not None:
+            parsed = parser_candidate
+            nlu_meta["nlu_fastpath"] = True
+
+    if parsed is None and not explanatory_llm_query:
+        # Tier 1.5: Code-switch shortcut — dictionary/token match (<2ms)
+        with stage_timer("codeswitch"):
+            codeswitch_parsed, codeswitch_meta = _try_codeswitch_routing(
+                original_text,
+                parser_candidate,
+                language_result.language,
+            )
+        nlu_meta.update(codeswitch_meta)
+        if codeswitch_parsed is not None:
+            parsed = codeswitch_parsed
+
+    if parsed is None and not explanatory_llm_query:
+        # Tier 2: Semantic router — embedding similarity (~5ms)
+        with stage_timer("semantic"):
+            semantic_parsed, semantic_meta = _try_semantic_routing(
+                original_text,
+                parser_candidate,
+            )
+        nlu_meta.update(semantic_meta)
+        if semantic_parsed is not None:
+            parsed = semantic_parsed
+            # Shadow margin: log when the OLD flat-threshold would have
+            # accepted this route but the NEW margin scoring rejected it as
+            # ambiguous — gathers evidence before tightening thresholds
+            # further (Phase 3/9). Logging only, never changes behavior.
+        if NLU_SHADOW_MARGIN and semantic_meta.get("semantic_ambiguous"):
+            _top3 = semantic_meta.get("semantic_top_3") or []
+            if len(_top3) >= 2:
+                _best_name, _best_score = _top3[0]
+                _second_name, _second_score = _top3[1]
+                logger.info(
+                    "shadow_margin_reject intent=%s best=%.2f second=%.2f margin=%.2f text=%r",
+                    _best_name, _best_score, _second_score,
+                    _best_score - _second_score, _truncate_text(original_text),
+                )
+
+    if parsed is None and not explanatory_llm_query:
+        # Tier 3: Keyword NLP — fuzzy keyword matching
+        with stage_timer("keyword_nlp"):
+            keyword_nlp_parsed, keyword_nlp_meta = _try_keyword_nlp_routing(
+                original_text,
+                parser_candidate,
+            )
+        nlu_meta.update(keyword_nlp_meta)
+        if keyword_nlp_parsed is not None:
+            parsed = keyword_nlp_parsed
+
+    # Guardrail: informational/news/weather questions should stay in LLM_QUERY
+    # instead of being hard-routed to browser_search_web by semantic/keyword tiers.
+    if parsed is not None:
+        _intent = str(getattr(parsed, "intent", "") or "").strip().upper()
+        _action_key = str((getattr(parsed, "args", {}) or {}).get("action_key") or "").strip().lower()
+        if (
+            _intent == "OS_SYSTEM_COMMAND"
+            and _action_key == "browser_search_web"
+            and _looks_keyword_nlp_informational_query(original_text)
+            and str(getattr(parser_candidate, "intent", "") or "").strip().upper() == "LLM_QUERY"
+        ):
+            parsed = parser_candidate
+            nlu_meta["informational_query_preferred_llm"] = True
+
+    if parsed is None and not explanatory_llm_query and _should_try_tool_tier(original_text, parser_candidate):
+        nlu_meta["tool_tier_attempted"] = True
+        tool_result = (
+            call_tool_tier_claude(original_text)
+            if LLM_BACKEND == "claude"
+            else call_tool_tier(original_text, model_name=None)
+        )
+        raw_tool_calls = tool_result.get("tool_calls") or []
+        parsed_tool_commands = tool_calls_to_parsed_commands(raw_tool_calls, original_text)
+        if parsed_tool_commands:
+            tool_meta = {
+                "tool_tier_used": True,
+                "tool_tier_tool_calls": list(raw_tool_calls),
+            }
+            if len(raw_tool_calls) > 1:
+                # Multi-step: ActionPlanner resolves {result_N} references so
+                # the output of one step can flow into the next (e.g. search a
+                # file then open its folder).
+                from core.action_planner import ActionPlanner
+                planner = ActionPlanner(
+                    executor=lambda p: _dispatch(
+                        p,
+                        allow_batch=False,
+                        allow_job_queue=False,
+                        allow_llm=False,
+                    )
+                )
+                _tool_success, _tool_message, _ = planner.plan_and_execute(
+                    raw_tool_calls, original_text, language_result.language
+                )
+            else:
+                # Single tool call — direct dispatch, no planner overhead.
+                _tool_success, _tool_message, _dispatch_meta = _dispatch(
+                    parsed_tool_commands[0],
+                    allow_batch=False,
+                    allow_job_queue=False,
+                    allow_llm=False,
+                )
+                if _dispatch_meta:
+                    tool_meta.update(_dispatch_meta)
+
+            _tool_parsed = parsed_tool_commands[0]
+            _tool_response = str(_tool_message or "")
+            if _tool_success:
+                _tool_response = _finalize_success_response(
+                    _tool_response,
+                    _tool_parsed,
+                    language_result.language,
+                    original_text,
+                    tone_meta,
+                    realtime=realtime,
+                )
+                if _should_store_turn(_tool_parsed, _tool_response):
+                    session_memory.add_turn(
+                        original_text,
+                        _tool_response,
+                        language=language_result.language,
+                        intent=_tool_parsed.intent,
+                    )
+            _latency = time.perf_counter() - start
+            metrics.record_command(_tool_parsed.intent, _tool_success, _latency, language=language_result.language)
+            log_structured(
+                "route_command_result",
+                language=language_result.language,
+                intent=_tool_parsed.intent,
+                action=_tool_parsed.action or "",
+                success=bool(_tool_success),
+                latency_ms=_latency * 1000.0,
+                confidence=float(tool_meta.get("intent_confidence") or 0.0),
+                clarified=False,
+                user_text=_truncate_text(original_text),
+                response_preview=_truncate_text(_tool_response),
+                semantic_top_3=nlu_meta.get("semantic_top_3") or [],
+            )
+            return _format_demo_output(_tool_parsed, _tool_success, _tool_response, tool_meta)
+
+    if (
+        parsed is None
+        and CLARIFY_FROM_TEMPLATES
+        and nlu_meta.get("semantic_ambiguous")
+        and nlu_meta.get("semantic_candidates")
+    ):
+        # No tier resolved the command unambiguously, but the semantic router's
+        # near-tie signal (Phase 3 margin scoring) suggests two likely intents —
+        # ask a targeted "did you mean X or Y?" instead of silently falling to LLM_QUERY.
+        _ambiguity_prompt = clarification_builder.build_ambiguity_clarification(
+            nlu_meta["semantic_candidates"], language_result.language,
+        )
+        session_memory.set_pending_clarification({
+            "reason": "semantic_ambiguous",
+            "intent": "LLM_QUERY",
+            "action": "",
+            "source_text": original_text,
+            "args": {},
+            "prompt": _ambiguity_prompt,
+            "options": [],
+            "candidates": list(nlu_meta["semantic_candidates"]),
+            "attempts": 0,
+        })
+        latency = time.perf_counter() - start
+        metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+        log_structured(
+            "route_semantic_ambiguity_requested",
+            level="info",
+            language=language_result.language,
+            semantic_top_3=nlu_meta.get("semantic_top_3") or [],
+            latency_ms=latency * 1000.0,
+            user_text=_truncate_text(original_text),
+        )
+        return _ambiguity_prompt
+
+    if (
+        parsed is None
+        and STRUCTURED_LLM_NLU_ENABLED
+        and _understand_structured is not None
+        and not explanatory_llm_query
+        and not nlu_meta.get("tool_tier_attempted")
+        and (
+            not STRUCTURED_LLM_NLU_ONLY_ON_UNCERTAIN
+            or _should_try_tool_tier(original_text, parser_candidate)
+        )
+    ):
+        # Hard-gated fallback: parser + code-switch + semantic + keyword-NLP all
+        # missed, and Tier-4 tool-calling didn't run this turn. Tier-4 shares
+        # this exact _should_try_tool_tier gate and always runs first when it
+        # passes (see nlu_meta["tool_tier_attempted"] above), so under normal
+        # operation this branch only fires when Tier-4 itself is unavailable
+        # for this turn (disabled/exception before its flag check) — by
+        # design, to honor "one LLM call per turn max". It is intentionally
+        # a rare fallback, not dead code. Output ALWAYS passes route_verifier
+        # — never dispatched directly.
+        nlu_meta["structured_llm_nlu_attempted"] = True
+        with stage_timer("structured_llm"):
+            structured_result = _understand_structured(
+                original_text,
+                language_result.language,
+                timeout=STRUCTURED_LLM_NLU_TIMEOUT_SECONDS,
+            )
+        if structured_result is not None:
+            nlu_meta["structured_llm_nlu_intent"] = structured_result["intent"]
+            nlu_meta["structured_llm_nlu_confidence"] = structured_result["confidence"]
+            structured_parsed = ParsedCommand(
+                intent=structured_result["intent"],
+                raw=original_text,
+                normalized=" ".join(original_text.lower().split()).strip(),
+                action=structured_result["action"],
+                args=dict(structured_result["slots"]),
+            )
+            with stage_timer("verify"):
+                structured_decision = route_verifier.verify(
+                    structured_parsed,
+                    original_text,
+                    structured_result["confidence"],
+                    language=language_result.language,
+                    fast_command_min_confidence=FAST_COMMAND_MIN_CONFIDENCE,
+                    should_clarify=bool(structured_result["missing_slots"]),
+                )
+            nlu_meta["structured_llm_nlu_decision"] = structured_decision.action
+            if structured_decision.action == "execute":
+                parsed = structured_parsed
+
+    if parsed is None:
+        # Tier 4: Fall through to parser candidate (LLM_QUERY → LLM fallback)
+        parsed = parser_candidate
+
+    # NLU entity enrichment: fill missing entities and detect unfilled required slots.
+    # Only runs for non-LLM intents where entity extraction is meaningful.
+    _nlu_intent = str(getattr(parsed, "intent", "") or "").strip().upper()
+    if (
+        NLU_ENTITY_EXTRACTION_ENABLED
+        and _nlu_understand is not None
+        and _nlu_intent not in ("LLM_QUERY", "")
+    ):
+        try:
+            with stage_timer("slot"):
+                _nlu_result = _nlu_understand(
+                    original_text,
+                    language_result.language,
+                    intent=_nlu_intent,
+                    existing_args=dict(parsed.args or {}),
+                )
+                # Enrich parsed.args with any newly extracted entities
+                for _slot_key, _slot_val in _nlu_result.entities.items():
+                    if _slot_key not in parsed.args or not parsed.args[_slot_key]:
+                        parsed.args[_slot_key] = _slot_val
+                nlu_meta["nlu_entities"] = dict(_nlu_result.entities)
+                nlu_meta["nlu_missing_slots"] = list(_nlu_result.missing_slots)
+                _missing_slots = list(_nlu_result.missing_slots)
+            # Missing required slot → ask a targeted follow-up question
+            if _missing_slots:
+                _first_missing = _missing_slots[0]
+                _slot_q = _build_slot_question(_nlu_intent, _first_missing, language_result.language)
+                session_memory.set_pending_clarification({
+                    "reason": "missing_slot",
+                    "intent": _nlu_intent,
+                    "action": str(getattr(parsed, "action", "") or ""),
+                    "source_text": original_text,
+                    "missing_slot": _first_missing,
+                    "args": dict(parsed.args or {}),
+                    "prompt": _slot_q,
+                    "options": [],
+                    "attempts": 0,
+                })
+                latency = time.perf_counter() - start
+                metrics.record_command("SLOT_FILLING", False, latency, language=language_result.language)
+                log_structured(
+                    "route_slot_fill_requested",
+                    level="info",
+                    language=language_result.language,
+                    intent=_nlu_intent,
+                    missing_slot=_first_missing,
+                    latency_ms=latency * 1000.0,
+                    user_text=_truncate_text(original_text),
+                )
+                return _slot_q
+        except Exception as _nlu_exc:
+            logger.warning("NLU entity enrichment failed: %s", _nlu_exc)
+
+    assessment = (
+        parser_fastpath_assessment
+        if nlu_meta.get("nlu_fastpath") and parser_fastpath_assessment is not None
+        else assess_intent_confidence(original_text, parsed, language=language_result.language)
+    )
+
+    if ROUTE_VERIFIER_ENABLED:
+        try:
+            with stage_timer("verify"):
+                route_decision = route_verifier.verify(
+                    parsed,
+                    original_text,
+                    assessment.confidence,
+                    entity_scores=assessment.entity_scores,
+                    language=language_result.language,
+                    fast_command_min_confidence=FAST_COMMAND_MIN_CONFIDENCE,
+                    should_clarify=assessment.should_clarify,
+                )
+            nlu_meta["route_decision"] = route_decision.action
+            nlu_meta["route_decision_reason"] = route_decision.reason
+        except Exception as exc:
+            logger.debug("route_verifier.verify failed: %s", exc)
+
+    if assessment.should_clarify:
+        clarification_payload = build_clarification_payload(
+            assessment,
+            source_text=original_text,
+            language=language_result.language,
+        )
+
+        preferred_option = _find_preferred_clarification_option(clarification_payload)
+        if preferred_option:
+            parsed = ParsedCommand(
+                intent=preferred_option.get("intent", "LLM_QUERY"),
+                raw=original_text,
+                normalized=" ".join(effective_text.lower().split()).strip(),
+                action=preferred_option.get("action", ""),
+                args=dict(preferred_option.get("args") or {}),
+            )
+            success = False
+            response = ""
+            meta = {
+                "language": language_result.language,
+                "intent_confidence": assessment.confidence,
+                "clarification_resolved": True,
+                "clarification_preference_used": True,
+            }
+            meta.update(nlu_meta)
+            if assessment.entity_scores:
+                meta["entity_scores"] = dict(assessment.entity_scores)
+            if followup_meta:
+                meta.update(followup_meta)
+
+            try:
+                success, response, dispatch_meta = _dispatch(parsed)
+                if dispatch_meta:
+                    meta.update(dispatch_meta)
+            except Exception as exc:
+                logger.error("Command routing failed after preference reuse: %s", exc)
+                response = "Sorry, I had an internal error."
+                success = False
+
+            if meta.get("clarification_payload"):
+                clarification_payload = dict(meta.get("clarification_payload") or {})
+                session_memory.mark_clarification_reuse_feedback(
+                    clarification_payload.get("reason") or assessment.reason,
+                    clarification_payload.get("source_text") or original_text,
+                    language=language_result.language,
+                    success=False,
+                )
+                session_memory.set_pending_clarification(clarification_payload)
+                latency = time.perf_counter() - start
+                metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+                metrics.record_clarification_event(
+                    "requested",
+                    intent=parsed.intent,
+                    language=language_result.language,
+                    reason=clarification_payload.get("reason") or assessment.reason,
+                    source_text=clarification_payload.get("source_text") or original_text,
+                    wrong_action_prevented=_is_wrong_action_prevented_reason(
+                        clarification_payload.get("reason") or assessment.reason
+                    ),
+                )
+                return clarification_payload.get("prompt") or response
+
+            session_memory.remember_clarification_choice(
+                clarification_payload.get("reason"),
+                clarification_payload.get("source_text") or original_text,
+                preferred_option,
+                language=language_result.language,
+            )
+            session_memory.mark_clarification_reuse_feedback(
+                clarification_payload.get("reason"),
+                clarification_payload.get("source_text") or original_text,
+                language=language_result.language,
+                success=bool(success),
+            )
+            _update_short_term_context(parsed, success, response, meta)
+            session_memory.mark_clarification_resolution(
+                reason=clarification_payload.get("reason"),
+                intent=parsed.intent,
+            )
+            latency = time.perf_counter() - start
+            metrics.record_command(parsed.intent, success, latency, language=language_result.language)
+            metrics.record_clarification_event(
+                "resolved" if success else "resolved_failed",
+                intent=parsed.intent,
+                language=language_result.language,
+                reason=clarification_payload.get("reason"),
+                source_text=clarification_payload.get("source_text") or original_text,
+                retry_count=0,
+                wrong_action_prevented=_is_wrong_action_prevented_reason(clarification_payload.get("reason")),
+            )
+            log_structured(
+                "route_clarification_preference_reused",
+                language=language_result.language,
+                intent=parsed.intent,
+                action=parsed.action or "",
+                success=bool(success),
+                latency_ms=latency * 1000.0,
+                reason=clarification_payload.get("reason"),
+                user_text=_truncate_text(original_text),
+                response_preview=_truncate_text(response),
+            )
+            if success:
+                response = _finalize_success_response(
+                    response,
+                    parsed,
+                    language_result.language,
+                    original_text,
+                    tone_meta,
+                    realtime=realtime,
+                )
+                if _should_store_turn(parsed, response):
+                    session_memory.add_turn(
+                        original_text,
+                        response,
+                        language=language_result.language,
+                        intent=parsed.intent,
+                    )
+            return _format_demo_output(parsed, success, response, meta)
+
+        session_memory.set_pending_clarification(clarification_payload)
+        latency = time.perf_counter() - start
+        metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+        metrics.record_clarification_event(
+            "requested",
+            intent=parsed.intent,
+            language=language_result.language,
+            reason=assessment.reason,
+            source_text=clarification_payload.get("source_text") or original_text,
+            wrong_action_prevented=_is_wrong_action_prevented_reason(assessment.reason),
+        )
+        log_structured(
+            "route_clarification_requested",
+            level="warning",
+            language=language_result.language,
+            intent=parsed.intent,
+            action=parsed.action or "",
+            confidence=float(assessment.confidence),
+            reason=assessment.reason,
+            latency_ms=latency * 1000.0,
+            user_text=_truncate_text(original_text),
+        )
+        log_action(
+            "intent_clarification_requested",
+            "pending",
+            details={
+                "reason": assessment.reason,
+                "intent": parsed.intent,
+                "action": parsed.action,
+                "confidence": assessment.confidence,
+                "mixed_language": assessment.mixed_language,
+                "source_text": original_text,
+            },
+        )
+        return assessment.prompt
+
+    success = False
+    response = ""
+    meta = {
+        "language": language_result.language,
+        "intent_confidence": assessment.confidence,
+    }
+    meta.update(nlu_meta)
+    if followup_meta:
+        meta.update(followup_meta)
+    if assessment.entity_scores:
+        meta["entity_scores"] = dict(assessment.entity_scores)
+
+    try:
+        success, response, dispatch_meta = _dispatch(parsed, on_sentence=on_sentence)
+        if dispatch_meta:
+            meta.update(dispatch_meta)
+            if dispatch_meta.get("clarification_payload"):
+                clarification_payload = dispatch_meta["clarification_payload"]
+                preferred_option = _find_preferred_clarification_option(clarification_payload)
+                if preferred_option:
+                    preferred_parsed = ParsedCommand(
+                        intent=preferred_option.get("intent", "LLM_QUERY"),
+                        raw=original_text,
+                        normalized=" ".join(effective_text.lower().split()).strip(),
+                        action=preferred_option.get("action", ""),
+                        args=dict(preferred_option.get("args") or {}),
+                    )
+                    success, response, preferred_meta = _dispatch(preferred_parsed, on_sentence=on_sentence)
+                    parsed = preferred_parsed
+                    meta["clarification_resolved"] = True
+                    meta["clarification_preference_used"] = True
+                    session_memory.remember_clarification_choice(
+                        clarification_payload.get("reason"),
+                        clarification_payload.get("source_text") or original_text,
+                        preferred_option,
+                        language=language_result.language,
+                    )
+                    if preferred_meta:
+                        meta.update(preferred_meta)
+
+                    nested_clarification = dict((preferred_meta or {}).get("clarification_payload") or {})
+                    if nested_clarification:
+                        session_memory.mark_clarification_reuse_feedback(
+                            clarification_payload.get("reason"),
+                            clarification_payload.get("source_text") or original_text,
+                            language=language_result.language,
+                            success=False,
+                        )
+                        clarification_payload = nested_clarification
+                        session_memory.set_pending_clarification(clarification_payload)
+                        latency = time.perf_counter() - start
+                        metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+                        metrics.record_clarification_event(
+                            "requested",
+                            intent=parsed.intent,
+                            language=language_result.language,
+                            reason=clarification_payload.get("reason", "runtime_disambiguation"),
+                            source_text=clarification_payload.get("source_text") or original_text,
+                            wrong_action_prevented=_is_wrong_action_prevented_reason(
+                                clarification_payload.get("reason", "runtime_disambiguation")
+                            ),
+                        )
+                        return clarification_payload.get("prompt") or response
+
+                    session_memory.mark_clarification_reuse_feedback(
+                        clarification_payload.get("reason"),
+                        clarification_payload.get("source_text") or original_text,
+                        language=language_result.language,
+                        success=bool(success),
+                    )
+                    metrics.record_clarification_event(
+                        "resolved" if success else "resolved_failed",
+                        intent=parsed.intent,
+                        language=language_result.language,
+                        reason=clarification_payload.get("reason", "runtime_disambiguation"),
+                        source_text=clarification_payload.get("source_text") or original_text,
+                        retry_count=0,
+                        wrong_action_prevented=_is_wrong_action_prevented_reason(
+                            clarification_payload.get("reason", "runtime_disambiguation")
+                        ),
+                    )
+                    session_memory.mark_clarification_resolution(
+                        reason=clarification_payload.get("reason", "runtime_disambiguation"),
+                        intent=parsed.intent,
+                    )
+                else:
+                    session_memory.set_pending_clarification(clarification_payload)
+                    latency = time.perf_counter() - start
+                    metrics.record_command("INTENT_CLARIFICATION", False, latency, language=language_result.language)
+                    metrics.record_clarification_event(
+                        "requested",
+                        intent=parsed.intent,
+                        language=language_result.language,
+                        reason=clarification_payload.get("reason", "runtime_disambiguation"),
+                        source_text=clarification_payload.get("source_text") or original_text,
+                        wrong_action_prevented=_is_wrong_action_prevented_reason(
+                            clarification_payload.get("reason", "runtime_disambiguation")
+                        ),
+                    )
+                    log_structured(
+                        "route_runtime_clarification_requested",
+                        level="warning",
+                        language=language_result.language,
+                        intent=parsed.intent,
+                        action=parsed.action or "",
+                        reason=clarification_payload.get("reason", "runtime_disambiguation"),
+                        confidence=float(clarification_payload.get("confidence") or 0.0),
+                        latency_ms=latency * 1000.0,
+                        user_text=_truncate_text(original_text),
+                    )
+                    log_action(
+                        "intent_clarification_requested",
+                        "pending",
+                        details={
+                            "reason": clarification_payload.get("reason", "runtime_disambiguation"),
+                            "intent": parsed.intent,
+                            "action": parsed.action,
+                            "confidence": clarification_payload.get("confidence"),
+                            "source_text": original_text,
+                        },
+                    )
+                    return clarification_payload.get("prompt") or response
+    except Exception as exc:
+        logger.error("Command routing failed: %s", exc)
+        response = "Sorry, I had an internal error."
+        success = False
+
+    _update_short_term_context(parsed, success, response, meta)
+
+    # Inline-PIN shortcut: if the command just created a pending PIN action AND
+    # the same utterance already contains the PIN (e.g. "shutdown, pin is 2468"),
+    # verify it immediately rather than forcing a second turn.
+    if (
+        SENSITIVE_CONFIRM_MODE == "pin"
+        and meta.get("token", "").lower() == "pin_required"
+        and confirmation_manager.has_pending_pin_action()
+    ):
+        inline_pin = extract_pin_from_text(original_text)
+        if inline_pin:
+            status, _msg, payload = confirmation_manager.verify_pin_and_execute(inline_pin)
+            if status == "executed":
+                try:
+                    pin_success, pin_response, pin_meta = _execute_confirmed_payload(payload)
+                except Exception as exc:
+                    logger.error("Inline-PIN execution failed: %s", exc)
+                    pin_success, pin_response, pin_meta = False, "Sorry, I had an internal error.", {}
+                pin_parsed = ParsedCommand(
+                    intent="OS_PIN_CONFIRM",
+                    raw=original_text,
+                    normalized=" ".join(str(original_text or "").lower().split()),
+                    action="",
+                    args={"pin": inline_pin},
+                )
+                _update_short_term_context(pin_parsed, pin_success, pin_response, pin_meta or {})
+                session_memory.clear_pending_confirmation_token()
+                latency = time.perf_counter() - start
+                metrics.record_command("OS_PIN_CONFIRM", pin_success, latency, language=language_result.language)
+                if pin_success:
+                    pin_response = _finalize_success_response(
+                        pin_response, pin_parsed, language_result.language, original_text, tone_meta, realtime=realtime
+                    )
+                    if _should_store_turn(pin_parsed, pin_response):
+                        session_memory.add_turn(original_text, pin_response, language=language_result.language, intent="OS_PIN_CONFIRM")
+                return _format_demo_output(pin_parsed, pin_success, pin_response, pin_meta or {})
+
+    latency = time.perf_counter() - start
+    metrics.record_command(parsed.intent, success, latency, language=language_result.language)
+    _stage_fields = {}
+    if ROUTE_TIMING_LOG:
+        for _stage in ("normalize", "parser", "codeswitch", "semantic", "keyword_nlp", "slot", "verify", "structured_llm"):
+            _stage_fields[f"{_stage}_ms"] = round(get_thread_stage_timing(_stage) * 1000.0, 2)
+    if MEMORY_TIMING_LOG:
+        for _stage in ("memory_fast", "memory_llm", "vector_recall"):
+            _stage_fields[f"{_stage}_ms"] = round(get_thread_stage_timing(_stage) * 1000.0, 2)
+    if ROUTE_TIMING_LOG or MEMORY_TIMING_LOG:
+        _stage_fields["total_route_ms"] = round(latency * 1000.0, 2)
+    log_structured(
+        "route_command_result",
+        language=language_result.language,
+        intent=parsed.intent,
+        action=parsed.action or "",
+        success=bool(success),
+        latency_ms=latency * 1000.0,
+        confidence=float(meta.get("intent_confidence") or 0.0),
+        clarified=bool(meta.get("clarification_resolved")),
+        user_text=_truncate_text(original_text),
+        response_preview=_truncate_text(response),
+        semantic_top_3=meta.get("semantic_top_3") or [],
+        missing_slots=meta.get("nlu_missing_slots") or [],
+        decision=meta.get("route_decision") or "",
+        route_decision_reason=meta.get("route_decision_reason") or "",
+        **_stage_fields,
+    )
+    if success:
+        response = _finalize_success_response(
+            response,
+            parsed,
+            language_result.language,
+            original_text,
+            tone_meta,
+            realtime=realtime,
+        )
+        if _should_store_turn(parsed, response):
+            session_memory.add_turn(
+                original_text,
+                response,
+                language=language_result.language,
+                intent=parsed.intent,
+            )
+    return _format_demo_output(parsed, success, response, meta)
+
+
+def initialize_command_services():
+    voice.initialize_runtime_profiles()
+    _ensure_job_queue_executor()
+    job_queue_service.start()
+    search_index_service.start()
+
+
+
+
+

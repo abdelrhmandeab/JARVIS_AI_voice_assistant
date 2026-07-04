@@ -1,0 +1,154 @@
+{"category": "en_command", "text": "open chrome", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "en_command", "text": "open notepad", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "en_command", "text": "launch spotify", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "en_command", "text": "close spotify", "expected_intent": "OS_APP_CLOSE", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "close firefox", "expected_intent": "OS_APP_CLOSE", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "take a screenshot", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "en_command", "text": "turn up the volume", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "en_command", "text": "mute the sound", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "en_command", "text": "lower the brightness", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "en_command", "text": "lock the computer", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "shut down the pc", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "restart the computer", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "set a timer for 5 minutes", "expected_intent": "OS_TIMER", "expected_slots": {"seconds": 300}, "should_execute": true}
+{"category": "en_command", "text": "set a timer for three minutes", "expected_intent": "OS_TIMER", "expected_slots": {"seconds": 180}, "should_execute": true}
+{"category": "en_command", "text": "cancel the timer", "expected_intent": "OS_TIMER", "should_execute": true}
+{"category": "en_command", "text": "go to documents folder", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "en_command", "text": "list files in downloads", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "en_command", "text": "create a new folder", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "en_command", "text": "delete report.pdf", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "move report.pdf to desktop", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "rename the file to notes.txt", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "en_command", "text": "find my resume pdf", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "en_command", "text": "search for report.docx", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "en_command", "text": "find CV PDF", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "en_command", "text": "what's on my screen", "expected_intent": "OS_SCREEN_DESCRIBE", "should_execute": true}
+{"category": "en_command", "text": "describe my screen", "expected_intent": "OS_SCREEN_DESCRIBE", "should_execute": true}
+{"category": "en_command", "text": "rescan apps", "expected_intent": "SEARCH_INDEX_COMMAND", "should_execute": true}
+{"category": "en_command", "text": "take a note buy groceries", "expected_intent": "OS_NOTE", "should_execute": true}
+{"category": "ar_command", "text": "افتح كروم", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "ar_command", "text": "شغل سبوتيفاي", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "ar_command", "text": "اقفل سبوتيفاي", "expected_intent": "OS_APP_CLOSE", "should_execute": false, "requires_confirmation": true}
+{"category": "ar_command", "text": "اقفل Firefox", "expected_intent": "OS_APP_CLOSE", "should_execute": false, "requires_confirmation": true}
+{"category": "ar_command", "text": "ارفع الصوت", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "ar_command", "text": "خفض السطوع", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "ar_command", "text": "اكتم الصوت", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "ar_command", "text": "خد سكرين شوت", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "ar_command", "text": "قفل الكمبيوتر", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "ar_command", "text": "اطفي الجهاز", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "ar_command", "text": "حط تايمر 5 دقايق", "expected_intent": "OS_TIMER", "expected_slots": {"seconds": 300}, "should_execute": true}
+{"category": "ar_command", "text": "حط timer على دقيقة واحدة", "expected_intent": "OS_TIMER", "expected_slots": {"seconds": 60}, "should_execute": true}
+{"category": "ar_command", "text": "الغي التايمر", "expected_intent": "OS_TIMER", "should_execute": true}
+{"category": "ar_command", "text": "دور على ملف CV.pdf في الديسكتوب", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "ar_command", "text": "دور على ملف نوتة", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "ar_command", "text": "وريني الملفات في التحميلات", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "ar_command", "text": "امسح الملف ده", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "ar_command", "text": "غير اسم الفايل", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "ar_command", "text": "ايه اللي على الشاشة", "expected_intent": "OS_SCREEN_DESCRIBE", "should_execute": true}
+{"category": "ar_command", "text": "اعمل نوتة جديدة", "expected_intent": "OS_NOTE", "should_execute": true}
+{"category": "ar_command", "text": "سجل الشاشة", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "ar_command", "text": "ووقف التسجيل", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "افتح Chrome", "expected_intent": "OS_APP_OPEN", "expected_slots": {"app_name": "chrome"}, "should_execute": true}
+{"category": "mixed_codeswitch", "text": "زود volume", "expected_intent": "OS_SYSTEM_COMMAND", "expected_slots": {"action_key": "volume_up"}, "should_execute": true}
+{"category": "mixed_codeswitch", "text": "شغل Spotify", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "اقفل Chrome", "expected_intent": "OS_APP_CLOSE", "should_execute": false, "requires_confirmation": true}
+{"category": "mixed_codeswitch", "text": "open الملفات", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "close Spotify", "expected_intent": "OS_APP_CLOSE", "should_execute": false, "requires_confirmation": true}
+{"category": "mixed_codeswitch", "text": "Rename memory movement plan MD لي memory plan.md", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false}
+{"category": "mixed_codeswitch", "text": "افتح ملف CV PDF", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "غير anyplan.ai to anyplan", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false}
+{"category": "mixed_codeswitch", "text": "اقفل tab اليوتيوب في الـ browser", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "افتح folder projects في Documents", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "دور على file certificates و documents", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "خفض السطوع شوية", "expected_intent": "OS_SYSTEM_COMMAND", "expected_slots": {"action_key": "brightness_down"}, "should_execute": true}
+{"category": "mixed_codeswitch", "text": "زود الصوت شوية", "expected_intent": "OS_SYSTEM_COMMAND", "expected_slots": {"action_key": "volume_up"}, "should_execute": true}
+{"category": "mixed_codeswitch", "text": "افتح tab جديد في Chrome", "expected_intent": "OS_SYSTEM_COMMAND", "expected_slots": {"action_key": "browser_new_tab"}, "should_execute": true}
+{"category": "mixed_codeswitch", "text": "اقفل الـ tab بتاع يوتيوب", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "ممكن تفتح لي notepad", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "يا جارفيس افتح كروم", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "mixed_codeswitch", "text": "جارفيس اقفل الكمبيوتر", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "mixed_codeswitch", "text": "ايه رأيك في Chrome", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_APP_OPEN"}
+{"category": "mixed_codeswitch", "text": "شغل صوت اعلى", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": false}
+{"category": "mixed_codeswitch", "text": "شغل notifications", "expected_intent": "OS_SETTINGS", "should_execute": false, "requires_confirmation": false}
+{"category": "mixed_codeswitch", "text": "افتح control panel", "expected_intent": "OS_SETTINGS", "should_execute": false, "requires_confirmation": false}
+{"category": "question", "text": "what is quantum computing", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "who is elon musk", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "what's the weather like", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "tell me a joke", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "what is chrome", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_APP_OPEN"}
+{"category": "question", "text": "how does electricity work", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "why is the sky blue", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "ايه هو الذكاء الاصطناعي", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "مين هو ايلون ماسك", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "الجو عامل ازاي", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "احكيلي نكته", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "هو إيه الحب؟ يعني إيه الحب؟", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "قولي أخبار مصر النهاردة", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "tell me about the pyramids", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "question", "text": "can you tell me how volume controls work on windows", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_SYSTEM_COMMAND"}
+{"category": "ambiguous", "text": "open", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "set a timer for", "expected_intent": "OS_TIMER", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "delete", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "close", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "search for", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "افتح", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "اقفل", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "ambiguous", "text": "دور على", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}
+{"category": "dangerous", "text": "shutdown computer", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "delete report.pdf permanently", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "restart my computer now", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "log off", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "delete the entire downloads folder", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "اطفي الكمبيوتر", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "اعمل ريستارت", "expected_intent": "OS_SYSTEM_COMMAND", "should_execute": false, "requires_confirmation": true}
+{"category": "dangerous", "text": "امسح الملف نهائيا", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": false, "requires_confirmation": true}
+{"category": "missing_slot", "text": "open app", "expected_intent": "OS_APP_OPEN", "should_execute": false, "should_clarify": true, "missing_slot": "app_name"}
+{"category": "missing_slot", "text": "set a timer for", "expected_intent": "OS_TIMER", "should_execute": false, "should_clarify": true, "missing_slot": "seconds"}
+{"category": "missing_slot", "text": "set a timer please", "expected_intent": "OS_TIMER", "should_execute": false, "should_clarify": true, "missing_slot": "seconds"}
+{"category": "missing_slot", "text": "حط تايمر على", "expected_intent": "OS_TIMER", "should_execute": false, "should_clarify": true, "missing_slot": "seconds"}
+{"category": "missing_slot", "text": "timer for", "expected_intent": "OS_TIMER", "should_execute": false, "should_clarify": true, "missing_slot": "seconds"}
+{"category": "follow_up", "text": "the second one", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "follow_up", "text": "yes do it", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "follow_up", "text": "cancel", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "follow_up", "text": "5 minutes", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "follow_up", "text": "نعم اعمل كده", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "follow_up", "text": "لا الغي", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "false_positive", "text": "RISK assessment report", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_SYSTEM_COMMAND"}
+{"category": "false_positive", "text": "explain how to raise the volume of my voice when presenting", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_SYSTEM_COMMAND"}
+{"category": "false_positive", "text": "can you tell me about opening a business", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_APP_OPEN"}
+{"category": "false_positive", "text": "what apps are open right now", "expected_intent": "OS_SCREEN_DESCRIBE", "should_execute": true}
+{"category": "false_positive", "text": "تعرف تفتح إيه من برامج", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_APP_OPEN"}
+{"category": "false_positive", "text": "ازاي اقفل شركة", "expected_intent": "LLM_QUERY", "should_execute": true, "must_not_execute_intent": "OS_APP_CLOSE"}
+{"category": "noisy_stt", "text": "سرش أو سرطيفة قولدر اندت", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "noisy_stt", "text": "ريني مفالد رلوه تقوه اندانس", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "noisy_stt", "text": "تشفوار سرطفك تلدر انظر", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "noisy_stt", "text": "حت دهمر على الذية", "expected_intent": "LLM_QUERY", "should_execute": true}
+{"category": "noisy_stt", "text": "دوق على ملف PDF في الـ", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "noisy_stt", "text": "Search for folder, uh, low in the box", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "noisy_stt", "text": "افتح ملف marry improved plan.e", "expected_intent": "OS_FILE_NAVIGATION", "should_execute": true}
+{"category": "noisy_stt", "text": "دور على Boulder Hallou في الـ Downtown", "expected_intent": "OS_FILE_SEARCH", "should_execute": true}
+{"category": "identity", "text": "who are you", "expected_intent": "IDENTITY", "should_execute": true}
+{"category": "identity", "text": "what can you do", "expected_intent": "IDENTITY", "should_execute": true}
+{"category": "identity", "text": "مين انت", "expected_intent": "IDENTITY", "should_execute": true}
+{"category": "identity", "text": "عرفني بنفسك أنت مين؟", "expected_intent": "IDENTITY", "should_execute": true}
+{"category": "identity", "text": "قولي إنت مين؟", "expected_intent": "IDENTITY", "should_execute": true}
+{"category": "multi_step", "text": "open chrome and then search for the weather", "expected_intent": "COMMAND_CHAIN", "should_execute": true}
+{"category": "multi_step", "text": "افتح كروم وبعدين دور على الأخبار", "expected_intent": "COMMAND_CHAIN", "should_execute": true}
+{"category": "multi_step", "text": "إقفل الـ YouTube والـ browser", "expected_intent": "COMMAND_CHAIN", "should_execute": true}
+{"category": "email_calendar", "text": "draft an email to john about the meeting", "expected_intent": "OS_EMAIL", "should_execute": true}
+{"category": "email_calendar", "text": "open outlook", "expected_intent": "OS_EMAIL", "should_execute": true}
+{"category": "email_calendar", "text": "ابعت ايميل", "expected_intent": "OS_EMAIL", "should_execute": true}
+{"category": "email_calendar", "text": "add meeting to calendar", "expected_intent": "OS_CALENDAR", "should_execute": true}
+{"category": "email_calendar", "text": "اعمل حدث في الكالندر", "expected_intent": "OS_CALENDAR", "should_execute": true}
+{"category": "settings", "text": "open settings", "expected_intent": "OS_SETTINGS", "should_execute": true}
+{"category": "settings", "text": "open wifi settings", "expected_intent": "OS_SETTINGS", "should_execute": true}
+{"category": "settings", "text": "افتح الاعدادات", "expected_intent": "OS_SETTINGS", "should_execute": true}
+{"category": "sysinfo", "text": "battery status", "expected_intent": "OS_SYSINFO", "should_execute": true}
+{"category": "sysinfo", "text": "how much RAM is in use", "expected_intent": "OS_SYSINFO", "should_execute": true}
+{"category": "sysinfo", "text": "البطارية كام", "expected_intent": "OS_SYSINFO", "should_execute": true}
+{"category": "clipboard", "text": "read clipboard", "expected_intent": "OS_CLIPBOARD", "should_execute": true}
+{"category": "clipboard", "text": "clear clipboard", "expected_intent": "OS_CLIPBOARD", "should_execute": true}
+{"category": "voice_control", "text": "stop talking", "expected_intent": "VOICE_COMMAND", "should_execute": true}
+{"category": "voice_control", "text": "اسكت", "expected_intent": "VOICE_COMMAND", "should_execute": true}
+{"category": "near_tie", "text": "open Spotify. إيه في ال Spotify؟", "expected_intent": "OS_APP_OPEN", "should_execute": true}
+{"category": "near_tie", "text": "Open it", "expected_intent": "LLM_QUERY", "should_execute": false, "should_clarify": true}

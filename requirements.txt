@@ -1,0 +1,104 @@
+# Jarvis — Production Runtime Dependencies
+# Install with: pip install -r requirements.txt
+#
+# TIER: PRODUCTION (balanced) — all primary features for desktop assistant
+# Default install for a full-featured Jarvis experience. Includes voice I/O,
+# local LLM, system control, telemetry, and feature flags for staged rollouts.
+# For a minimal install, use requirements-minimal.txt (voice + LLM only).
+# For full suite with optional tools, use requirements-full.txt.
+#
+# Phase 5–7 additions: pynput (media dispatch), telemetry hooks, feature flags
+
+# === TIER 1: VOICE PIPELINE (CORE) ===
+# Wake word → STT → TTS, streaming capture, energy VAD, transcript processing
+
+# Environment & config
+python-dotenv==1.2.2
+
+# Audio capture + processing
+numpy==2.4.2
+sounddevice==0.5.5
+onnxruntime>=1.26.0  # Lightweight ONNX runtime for VAD + wake-word models
+
+# Speech-to-text — local Faster-Whisper (Arabic + English)
+faster-whisper==1.2.1
+
+# Wake word detection — ONNX model loader (default: English "Jarvis")
+openwakeword==0.6.0
+
+# Text-to-speech — edge-tts (free, no API key) + ElevenLabs fallback
+edge-tts>=6.1.12
+soundfile>=0.12.1  # MP3 stream decoder for edge-tts output
+
+# === TIER 2: ORCHESTRATION (CORE) ===
+# Routing, parsing, LLM dispatch, system monitoring
+
+# HTTP client for Ollama, LLM, external APIs
+httpx==0.28.1
+
+# System info (CPU, RAM, battery) — hardware tier detection
+psutil==7.2.2
+
+# NLP fuzzy matching for intent resolution
+rapidfuzz==3.14.3
+
+# === TIER 3: OPTIONAL LLM BACKENDS ===
+# Claude API support (Ollama is primary); telemetry & metrics
+
+# Claude API (optional backend; Ollama primary)
+anthropic>=0.40.0
+
+# Telemetry & metrics for production observability
+# (Included in core/ for phase 6-7 structured logging)
+
+# === TIER 4: INTELLIGENT FEATURES ===
+# Memory, embeddings, web search — graceful degradation if missing
+
+# Vector semantic memory (ChromaDB + local embeddings)
+chromadb>=0.5.0
+
+# Multilingual embeddings for semantic intent routing & paraphrase tolerance
+# Pin <5.0 to avoid torchcodec issues on some Windows/Python combinations
+sentence-transformers>=3.0.0,<5.0.0
+
+# Live web search (news, prices, weather context)
+duckduckgo-search>=7.0.0
+ddgs>=9.0.0
+
+# === TIER 5: OS INTEGRATION (WINDOWS-SPECIFIC) ===
+# Volume, brightness, clipboard, email, calendar, media control
+
+# Volume control via native Windows audio API (pycaw)
+comtypes>=1.4.8; platform_system == "Windows"
+pycaw>=20240210; platform_system == "Windows"
+wmi>=1.5.1; platform_system == "Windows"
+
+# Wi-Fi/Bluetooth/Airplane radio control via WinRT Radios API (no admin needed)
+winsdk>=1.0.0b10; platform_system == "Windows"
+
+# Brightness control via DDC-CI (direct display protocol)
+screen-brightness-control>=0.23.0
+
+# Clipboard read/write (pure Python fallback if missing)
+pyperclip>=1.9.0
+
+# Knowledge base auto-sync via filesystem events (polling fallback if missing)
+watchdog>=3.0.0
+
+# Outlook email/calendar draft composition, Windows Search Index
+pywin32>=306; platform_system == "Windows"
+
+# ElevenLabs TTS (optional, requires API key; edge-tts used as fallback)
+elevenlabs>=1.0.0
+
+# System tray UI
+pystray==0.19.5
+Pillow>=9.0.0
+
+# === TIER 6: DESKTOP UI BRIDGE (OPTIONAL) ===
+# WebSocket server connecting the engine to the desktop UI. Engine runs without these.
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+websockets>=15.0
+
+
