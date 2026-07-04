@@ -12,7 +12,7 @@ from core.config import (
     DEFAULT_WORKING_DIRECTORY,
     FILE_DEFAULT_SEARCH_ROOTS,
     FILE_HUMANIZE_PATHS,
-    FILE_SPOKEN_RESULTS_MAX,
+    FILE_SPEAK_PATHS,
     MAX_FILE_RESULTS,
     ROLLBACK_DIR_NAME,
     SECOND_FACTOR_REQUIRED_FOR_DESTRUCTIVE,
@@ -371,6 +371,22 @@ def _request_file_operation_confirmation(operation, description, resolved_args):
     )
 
 
+def _humanize_operation_message(template, src, dst, *, name_only_dst=False):
+    """Build a human-only confirmation message for a completed file
+    operation: never a raw path, just the item name + friendly folder name.
+
+    ``dst`` is the destination FILE path (source name preserved); we speak
+    its parent FOLDER humanized, not the full file path — "Moved report to
+    Projects", not "Moved report to report in folder Projects"."""
+    name = os.path.basename(src.rstrip(os.sep)) or src
+    if name_only_dst:
+        dst_display = os.path.basename(dst.rstrip(os.sep)) or dst
+    else:
+        dst_parent = os.path.dirname(dst.rstrip(os.sep)) or dst
+        dst_display = humanize_path(dst_parent).get("en") or os.path.basename(dst_parent)
+    return template.format(name=name, dst=dst_display)
+
+
 def _execute_move_item(src, dst, action_name="move_item"):
     try:
         destination_parent = os.path.dirname(dst)
@@ -384,16 +400,22 @@ def _execute_move_item(src, dst, action_name="move_item"):
             details={"source": src, "destination": dst, "rollback_action_id": action_id},
             rollback_data={"rollback_action_id": action_id},
         )
-        verb = "Renamed" if action_name == "rename_item" else "Moved"
+        if action_name == "rename_item":
+            new_name = os.path.basename(dst.rstrip(os.sep))
+            message = _humanize_operation_message("Renamed {name} to {dst}.", src, new_name, name_only_dst=True)
+            raw_message = f"Renamed: {src} -> {dst}"
+        else:
+            message = _humanize_operation_message("Moved {name} to {dst}.", src, dst)
+            raw_message = f"Moved: {src} -> {dst}"
         return success_result(
-            f"{verb}: {src} -> {dst}",
+            message if not FILE_SPEAK_PATHS else raw_message,
             debug_info={"source": src, "destination": dst, "operation": action_name},
             executed_confirmed_action="file_operation",
         )
     except Exception as exc:
         log_action(action_name, "failed", details={"source": src, "destination": dst}, error=exc)
         return failure_result(
-            f"Failed to execute {action_name}: {exc}",
+            f"Failed to {'rename' if action_name == 'rename_item' else 'move'} that item.",
             error_code="execution_failed",
             debug_info={"source": src, "destination": dst, "operation": action_name},
         )
@@ -405,26 +427,27 @@ def _execute_copy_item(src, dst):
         destination_parent = os.path.dirname(dst)
         if destination_parent:
             os.makedirs(destination_parent, exist_ok=True)
-        
+
         if os.path.isdir(src):
             shutil.copytree(src, dst)
         else:
             shutil.copy2(src, dst)
-        
+
         log_action(
             "copy_item",
             "success",
             details={"source": src, "destination": dst},
         )
+        message = _humanize_operation_message("Copied {name} to {dst}.", src, dst)
         return success_result(
-            f"Copied: {src} -> {dst}",
+            message if not FILE_SPEAK_PATHS else f"Copied: {src} -> {dst}",
             debug_info={"source": src, "destination": dst, "operation": "copy_item"},
             executed_confirmed_action="file_operation",
         )
     except Exception as exc:
         log_action("copy_item", "failed", details={"source": src, "destination": dst}, error=exc)
         return failure_result(
-            f"Failed to copy item: {exc}",
+            "Failed to copy that item.",
             error_code="execution_failed",
             debug_info={"source": src, "destination": dst, "operation": "copy_item"},
         )
@@ -433,6 +456,7 @@ def _execute_copy_item(src, dst):
 
 def _execute_delete_item(target, permanent=False):
     operation = "delete_item_permanent" if permanent else "delete_item"
+    name = os.path.basename(target.rstrip(os.sep)) or target
     try:
         if permanent:
             if os.path.isdir(target):
@@ -444,8 +468,9 @@ def _execute_delete_item(target, permanent=False):
                 "success",
                 details={"path": target, "permanent": True},
             )
+            message = f"Permanently deleted {name}." if not FILE_SPEAK_PATHS else f"Permanently deleted: {target}"
             return success_result(
-                f"Permanently deleted: {target}",
+                message,
                 debug_info={"path": target, "operation": operation, "permanent": True},
                 executed_confirmed_action="file_operation",
             )
@@ -465,15 +490,16 @@ def _execute_delete_item(target, permanent=False):
             details={"path": target, "backup_path": backup_path, "rollback_action_id": action_id, "permanent": False},
             rollback_data={"rollback_action_id": action_id},
         )
+        message = f"Deleted {name}." if not FILE_SPEAK_PATHS else f"Deleted (moved to rollback storage): {target}"
         return success_result(
-            f"Deleted (moved to rollback storage): {target}",
+            message,
             debug_info={"path": target, "operation": operation, "permanent": False},
             executed_confirmed_action="file_operation",
         )
     except Exception as exc:
         log_action(operation, "failed", details={"path": target, "permanent": bool(permanent)}, error=exc)
         return failure_result(
-            f"Failed to delete item: {exc}",
+            f"Failed to delete {name}.",
             error_code="execution_failed",
             debug_info={"path": target, "operation": operation, "permanent": bool(permanent)},
         )
@@ -485,6 +511,18 @@ def _validation_error_result(message, debug_info=None):
         error_code="validation_error",
         debug_info=dict(debug_info or {}),
     )
+
+
+_PATH_SUFFIX_RE = re.compile(r":\s*[A-Za-z]:[\\/][^\n]*$|:\s*[\\/][^\n]*$")
+
+
+def _sanitize_reason(reason):
+    """Strip a trailing ': <raw path>' suffix from an internal validation
+    reason before it is spoken, without touching the leading phrase used
+    for prefix-matching control flow (e.g. 'Source does not exist')."""
+    if bool(FILE_SPEAK_PATHS):
+        return reason
+    return _PATH_SUFFIX_RE.sub("", str(reason or "")).strip() or "That operation isn't possible."
 
 
 def _resolve_validated_path(path_value, label, allow_empty=False):
@@ -514,21 +552,23 @@ def change_directory_result(path):
     ok, reason = _check_path_policy(target, write=False)
     if not ok:
         return failure_result(
-            reason,
+            _sanitize_reason(reason),
             error_code="policy_blocked",
             debug_info={"path": target},
         )
     if not os.path.isdir(target):
         return failure_result(
-            f"Directory does not exist: {target}",
+            "That folder doesn't exist.",
             error_code="not_found",
             debug_info={"path": target},
         )
 
     _current_directory = target
     log_action("change_directory", "success", details={"new_directory": target})
+    human = humanize_path(target).get("en") or os.path.basename(target) or target
+    message = f"Current directory set to {human}." if not FILE_SPEAK_PATHS else f"Current directory set to: {target}"
     return success_result(
-        f"Current directory set to: {target}",
+        message,
         debug_info={"path": target},
     )
 
@@ -551,7 +591,7 @@ def list_directory_result(path=None, limit=50):
         )
     if not os.path.isdir(target):
         return failure_result(
-            f"Directory does not exist: {target}",
+            "That folder doesn't exist.",
             error_code="not_found",
             debug_info={"path": target},
         )
@@ -626,20 +666,30 @@ def get_file_metadata_result(path):
         )
     if not os.path.exists(target):
         return failure_result(
-            f"Path does not exist: {target}",
+            "That file or folder doesn't exist.",
             error_code="not_found",
             debug_info={"path": target},
         )
 
     try:
         st = os.stat(target)
-        metadata = [
-            f"Path: {target}",
-            f"Type: {'Directory' if os.path.isdir(target) else 'File'}",
-            f"Size: {st.st_size} bytes",
-            f"Created: {st.st_ctime}",
-            f"Modified: {st.st_mtime}",
-        ]
+        name = humanize_path(target).get("en") or os.path.basename(target) or target
+        if not bool(FILE_SPEAK_PATHS):
+            metadata = [
+                f"{name}",
+                f"Type: {'Directory' if os.path.isdir(target) else 'File'}",
+                f"Size: {st.st_size} bytes",
+                f"Created: {time.ctime(st.st_ctime)}",
+                f"Modified: {time.ctime(st.st_mtime)}",
+            ]
+        else:
+            metadata = [
+                f"Path: {target}",
+                f"Type: {'Directory' if os.path.isdir(target) else 'File'}",
+                f"Size: {st.st_size} bytes",
+                f"Created: {time.ctime(st.st_ctime)}",
+                f"Modified: {time.ctime(st.st_mtime)}",
+            ]
         log_action("file_metadata", "success", details={"path": target})
         return success_result("\n".join(metadata), debug_info={"path": target})
     except Exception as exc:
@@ -838,7 +888,7 @@ def create_directory_result(path):
     ok, reason = _check_path_policy(target, write=True)
     if not ok:
         return failure_result(
-            reason,
+            _sanitize_reason(reason),
             error_code="policy_blocked",
             debug_info={"path": target},
         )
@@ -852,20 +902,22 @@ def create_directory_result(path):
             details={"path": target, "rollback_action_id": action_id},
             rollback_data={"rollback_action_id": action_id},
         )
+        human = humanize_path(target).get("en") or os.path.basename(target) or target
+        message = f"Created directory {human}." if not FILE_SPEAK_PATHS else f"Created directory: {target}"
         return success_result(
-            f"Created directory: {target}",
+            message,
             debug_info={"path": target, "rollback_action_id": action_id},
         )
     except FileExistsError:
         return failure_result(
-            f"Directory already exists: {target}",
+            "That directory already exists.",
             error_code="already_exists",
             debug_info={"path": target},
         )
     except Exception as exc:
         log_action("create_directory", "failed", details={"path": target}, error=exc)
         return failure_result(
-            f"Failed to create directory: {exc}",
+            "Failed to create that directory.",
             error_code="execution_failed",
             debug_info={"path": target},
         )
@@ -917,8 +969,11 @@ def request_move_item(source, destination):
                     debug_info={"candidates": value or []},
                 )
     if not ok:
-        return failure_result(reason, error_code="validation_error")
-    description = f"Move item from `{src}` to `{dst}`"
+        return failure_result(_sanitize_reason(reason), error_code="validation_error")
+    description = (
+        f"Move item from `{src}` to `{dst}`" if FILE_SPEAK_PATHS
+        else _humanize_operation_message("Move {name} to {dst}", src, dst)
+    )
     return _request_file_operation_confirmation(
         "move_item",
         description,
@@ -959,9 +1014,12 @@ def request_rename_item(source, new_name, location=None):
                     if ok:
                         break
         if not ok:
-            return failure_result(reason, error_code="validation_error")
+            return failure_result(_sanitize_reason(reason), error_code="validation_error")
 
-    description = f"Rename item `{src}` to `{os.path.basename(dst)}`"
+    description = (
+        f"Rename item `{src}` to `{os.path.basename(dst)}`" if FILE_SPEAK_PATHS
+        else _humanize_operation_message("Rename {name} to {dst}", src, os.path.basename(dst), name_only_dst=True)
+    )
     return _request_file_operation_confirmation(
         "rename_item",
         description,
@@ -1008,13 +1066,17 @@ def request_delete_item(path, permanent=False, location=None):
                 error_code="ambiguous_target",
                 debug_info={"candidates": target or []},
             )
-        return failure_result(reason, error_code="validation_error")
+        return failure_result(_sanitize_reason(reason), error_code="validation_error")
 
     operation = "delete_item_permanent" if permanent else "delete_item"
-    if permanent:
-        description = f"Permanently delete item `{target}` (cannot be undone)."
+    name = os.path.basename(target.rstrip(os.sep)) or target
+    if FILE_SPEAK_PATHS:
+        description = (
+            f"Permanently delete item `{target}` (cannot be undone)." if permanent
+            else f"Delete item `{target}`"
+        )
     else:
-        description = f"Delete item `{target}`"
+        description = f"Permanently delete {name} (cannot be undone)." if permanent else f"Delete {name}"
     return _request_file_operation_confirmation(
         operation,
         description,
@@ -1030,8 +1092,11 @@ def request_copy_item(source, destination):
 
     ok, reason, src, dst = _prepare_copy_paths(source, destination)
     if not ok:
-        return failure_result(reason, error_code="validation_error")
-    description = f"Copy item from `{src}` to `{dst}`"
+        return failure_result(_sanitize_reason(reason), error_code="validation_error")
+    description = (
+        f"Copy item from `{src}` to `{dst}`" if FILE_SPEAK_PATHS
+        else _humanize_operation_message("Copy {name} to {dst}", src, dst)
+    )
     return _request_file_operation_confirmation(
         "copy_item",
         description,
@@ -1060,9 +1125,9 @@ def execute_confirmed_file_operation(payload):
             )
         ok, reason = _check_path_policy(target, write=True)
         if not ok:
-            return failure_result(reason, error_code="policy_blocked")
+            return failure_result(_sanitize_reason(reason), error_code="policy_blocked")
         if not os.path.exists(target):
-            return failure_result(f"Path does not exist: {target}", error_code="not_found")
+            return failure_result("That file or folder doesn't exist.", error_code="not_found")
 
         permanent = bool(resolved_args.get("permanent") or operation == "delete_item_permanent")
         if permanent and not ALLOW_PERMANENT_DELETE:
@@ -1091,7 +1156,7 @@ def execute_confirmed_file_operation(payload):
         if not dst_ok:
             return failure_result(dst_reason, error_code="policy_blocked")
         if not os.path.exists(src):
-            return failure_result(f"Source does not exist: {src}", error_code="not_found")
+            return failure_result("That file or folder doesn't exist.", error_code="not_found")
         result = _execute_move_item(src, dst, action_name=operation)
         if isinstance(result, dict):
             result["risk_tier"] = risk_tier
@@ -1112,7 +1177,7 @@ def execute_confirmed_file_operation(payload):
         if not dst_ok:
             return failure_result(dst_reason, error_code="policy_blocked")
         if not os.path.exists(src):
-            return failure_result(f"Source does not exist: {src}", error_code="not_found")
+            return failure_result("That file or folder doesn't exist.", error_code="not_found")
         result = _execute_copy_item(src, dst)
         if isinstance(result, dict):
             result["risk_tier"] = risk_tier

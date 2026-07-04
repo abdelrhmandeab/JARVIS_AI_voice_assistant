@@ -498,6 +498,11 @@ GREETING_TEXT_EN = _env("JARVIS_GREETING_TEXT_EN", "Jarvis is online and ready."
 GREETING_TEXT_AR = _env("JARVIS_GREETING_TEXT_AR", "أهلاً بيك، جارفيس جاهز معاك.")
 GREETING_PRESPEAK_SETTLE_MS = max(0, _env_int("JARVIS_GREETING_PRESPEAK_SETTLE_MS", 150))
 GREETING_DEVICE_WARMUP = _env_bool("JARVIS_GREETING_DEVICE_WARMUP", True)
+# When true (default), the greeting blocks until TTS finishes before the wake
+# loop starts listening, so the mic never opens mid-greeting. Disabling this
+# is not recommended — it re-introduces the greeting/wake-loop race the rest
+# of Phase 5 exists to close.
+GREETING_BLOCKING = _env_bool("JARVIS_GREETING_BLOCKING", True)
 LLM_PREWARM_BEFORE_GREETING = _env_bool("JARVIS_LLM_PREWARM_BEFORE_GREETING", True)
 IDENTITY_MODE = _env("JARVIS_IDENTITY_MODE", "pool").strip().lower()
 IDENTITY_AVOID_REPEAT = _env_bool("JARVIS_IDENTITY_AVOID_REPEAT", True)
@@ -748,6 +753,15 @@ FILE_DEFAULT_SEARCH_ROOTS = _env_list(
     "JARVIS_FILE_DEFAULT_SEARCH_ROOTS",
     ("Documents", "Downloads", "Desktop"),
 )
+
+# Phase 4 — file commands execute, don't narrate: search/find/list open
+# Explorer directly instead of speaking a listing or asking "want me to open
+# it?"; extension is optional everywhere; spoken responses never contain a
+# raw filesystem path.
+FILE_EXECUTE_NOT_NARRATE = _env_bool("JARVIS_FILE_EXECUTE_NOT_NARRATE", True)
+FILE_EXTENSION_OPTIONAL = _env_bool("JARVIS_FILE_EXTENSION_OPTIONAL", True)
+FILE_OPEN_IN_EXPLORER = _env_bool("JARVIS_FILE_OPEN_IN_EXPLORER", True)
+FILE_SPEAK_PATHS = _env_bool("JARVIS_FILE_SPEAK_PATHS", False)
 POWERSHELL_EXECUTABLE = _env("JARVIS_POWERSHELL_EXECUTABLE", "powershell")
 ACTION_LOG_FILE = _env("JARVIS_ACTION_LOG_FILE", "").strip() or _data_path("logs", "jarvis_actions.log")
 ROLLBACK_DIR_NAME = ".jarvis_rollback"

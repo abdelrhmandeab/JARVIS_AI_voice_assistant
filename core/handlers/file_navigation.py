@@ -1,4 +1,5 @@
 import os
+from core.config import FILE_EXECUTE_NOT_NARRATE, FILE_OPEN_IN_EXPLORER
 from os_control.adapter_result import to_router_tuple
 from os_control.file_ops import (
     change_directory_result,
@@ -13,6 +14,7 @@ from os_control.file_ops import (
     request_rename_item,
 )
 from os_control.explorer_ops import open_in_explorer, open_file, reveal_in_explorer
+from os_control.path_resolver import humanize_path
 from core.session_memory import session_memory
 
 
@@ -38,12 +40,26 @@ def handle(parsed):
         return open_file(args.get("path", ""), language=lang)
 
     if action == "pwd":
-        return True, f"Current directory: {get_current_directory()}", {}
+        current = get_current_directory()
+        if FILE_EXECUTE_NOT_NARRATE:
+            if FILE_OPEN_IN_EXPLORER:
+                open_in_explorer(current, language=lang)
+            human = humanize_path(current).get("ar" if lang == "ar" else "en") or ""
+            msg = f"إنت في {human}." if lang == "ar" else f"You're in {human}."
+            return True, msg, {}
+        return True, f"Current directory: {current}", {}
     if action == "cd":
         return to_router_tuple(change_directory_result(args.get("path", "")))
     if action == "list_drives":
         return to_router_tuple(list_drives_win32_result())
     if action == "list_directory":
+        target_path = args.get("path") or get_current_directory()
+        if FILE_EXECUTE_NOT_NARRATE:
+            if FILE_OPEN_IN_EXPLORER:
+                open_in_explorer(target_path, language=lang)
+            human = humanize_path(target_path).get("ar" if lang == "ar" else "en") or ""
+            msg = f"فتحتلك {human} في المستكشف." if lang == "ar" else f"Opened {human} in Explorer."
+            return True, msg, {}
         return to_router_tuple(list_directory_result(args.get("path")))
     if action == "file_info":
         return to_router_tuple(get_file_metadata_result(args.get("path", "")))

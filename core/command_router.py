@@ -78,6 +78,8 @@ from core.config import (
     SENSITIVE_CONFIRM_MODE,
     FILE_HUMANIZE_PATHS,
     FILE_SPOKEN_RESULTS_MAX,
+    FILE_EXECUTE_NOT_NARRATE,
+    FILE_OPEN_IN_EXPLORER,
 )
 from core.demo_mode import is_enabled as is_demo_mode_enabled
 from core.demo_mode import set_enabled as set_demo_mode
@@ -86,6 +88,7 @@ from core.handlers.advanced_operations import (
     handle_batch_file_operation,
     handle_semantic_search,
 )
+from os_control.explorer_ops import open_in_explorer, reveal_in_explorer
 from core.handlers import job_queue as job_queue_handler
 from core.handlers import knowledge_base, memory, persona, policy, search_index, voice
 from core.intent_confidence import (
@@ -2147,9 +2150,6 @@ def _direct_live_data_answer(query_text, tool_context, language):
         weather_block = _extract_tool_block(context, "WEATHER")
         clean_weather = weather_block or context
         return _format_weather_direct_answer(clean_weather, language)
-        if normalize_language(language) == "ar":
-            return f"حالة الطقس الحالية باختصار: {clean_weather}"
-        return f"Current weather summary: {clean_weather}"
 
     if _looks_news_query(query_text):
         search_block = _extract_tool_block(context, "WEB_SEARCH")
@@ -2705,17 +2705,32 @@ def _format_search_message(result, language):
     matches = list(result.get("results") or [])
     count = int(result.get("count") or len(matches) or 0)
     query = str(result.get("query") or "").strip()
-    if _is_arabic_language(language):
+    if not FILE_EXECUTE_NOT_NARRATE:
+        if _is_arabic_language(language):
+            if not matches:
+                return f"لا توجد نتائج مطابقة{' لـ ' + query if query else ''}."
+            lines = [f"نتائج البحث{' عن ' + query if query else ''}: {count} ملفات"]
+            lines.extend(f"- {match}" for match in matches)
+            return "\n".join(lines)
         if not matches:
-            return f"لا توجد نتائج مطابقة{' لـ ' + query if query else ''}."
-        lines = [f"نتائج البحث{' عن ' + query if query else ''}: {count} ملفات"]
+            return f"No matches found{' for ' + query if query else ''}."
+        lines = [f"Search results{' for ' + query if query else ''}: {count} files"]
         lines.extend(f"- {match}" for match in matches)
         return "\n".join(lines)
+
+    # Execute, don't narrate: open Explorer with the result(s) and say only
+    # a short human confirmation — never a path or a spoken listing.
+    is_ar = _is_arabic_language(language)
     if not matches:
-        return f"No matches found{' for ' + query if query else ''}."
-    lines = [f"Search results{' for ' + query if query else ''}: {count} files"]
-    lines.extend(f"- {match}" for match in matches)
-    return "\n".join(lines)
+        return f"لا توجد نتائج مطابقة{' لـ ' + query if query else ''}." if is_ar else (
+            f"No matches found{' for ' + query if query else ''}."
+        )
+    if FILE_OPEN_IN_EXPLORER:
+        if count == 1:
+            reveal_in_explorer(matches[0], language=language)
+        else:
+            open_in_explorer(matches[0], language=language)
+    return (f"لقيت {count} نتيجة، فتحتلك المستكشف." if is_ar else f"Found {count} results — opened Explorer.")
 
 
 def _split_chained_command_text(command_text):
@@ -3658,6 +3673,28 @@ def _build_app_runtime_clarification(app_query, candidates, *, operation="open")
     return prompt, payload
 
 
+def _execute_file_search_hit(path: str, is_open_verb: bool, language: str) -> str:
+    """Execute a single-file search hit instead of narrating it: open the
+    file directly if the user said "open X", otherwise reveal it selected in
+    Explorer. Returns a short human confirmation with no raw path."""
+    from os_control.path_resolver import humanize_path
+
+    is_ar = _is_arabic_language(language)
+    loc = humanize_path(path)
+    human = loc.get("ar" if is_ar else "en") or loc.get("en") or ""
+    if is_open_verb:
+        try:
+            os.startfile(path)  # noqa: S606 - user-requested local file open
+        except Exception:
+            reveal_in_explorer(path, language=language)
+            return f"لقيت {human} بس معرفتش أفتحه، وريتهولك في المستكشف." if is_ar else (
+                f"Found {human} but couldn't open it — revealed it in Explorer instead."
+            )
+        return f"فتحت {human}." if is_ar else f"Opened {human}."
+    reveal_in_explorer(path, language=language)
+    return f"لقيت {human}، وريتهولك في المستكشف." if is_ar else f"Found {human} — revealed in Explorer."
+
+
 def _humanize_file_result(path: str, filename: str, language: str, offer_open: bool = False) -> str:
     """Return a voice-friendly description of a search hit."""
     loc = humanize_path(path)
@@ -3873,25 +3910,47 @@ def _dispatch(parsed, *, allow_batch=True, allow_job_queue=True, allow_llm=True,
         _open_verb_re = re.compile(
             r"^(?:افتح|فتح|شغّل|شغل|open|launch|run|start)\b", re.IGNORECASE | re.UNICODE
         )
-        clarif_action = "open_file" if _open_verb_re.search(parsed.raw or "") else "file_info"
+        is_open_verb = bool(_open_verb_re.search(parsed.raw or ""))
+        clarif_action = "open_file" if is_open_verb else "file_info"
         search_index_service.start()
         indexed_results = search_index_service.search(filename, root=root)
         if indexed_results:
             if len(indexed_results) > 1:
+                if FILE_EXECUTE_NOT_NARRATE and FILE_OPEN_IN_EXPLORER:
+                    open_in_explorer(indexed_results[0], language=reply_language)
+                    is_ar = _is_arabic_language(reply_language)
+                    msg = f"لقيت {len(indexed_results)} نتيجة، فتحتلك المستكشف." if is_ar else (
+                        f"Found {len(indexed_results)} results — opened Explorer."
+                    )
+                    return True, msg, {"indexed_search": True, "results": indexed_results}
                 prompt, payload = _build_file_search_runtime_clarification(
                     filename, indexed_results, action=clarif_action
                 )
                 return True, prompt, {"indexed_search": True, "clarification_payload": payload}
             hit = indexed_results[0]
+            if FILE_EXECUTE_NOT_NARRATE:
+                msg = _execute_file_search_hit(hit, is_open_verb, reply_language)
+                return True, msg, {"indexed_search": True, "resolved_file_path": hit}
             msg = _humanize_file_result(hit, filename, reply_language, offer_open=True) if FILE_HUMANIZE_PATHS else hit
             return True, msg, {"indexed_search": True, "resolved_file_path": hit}
         results = find_files(filename, search_path=search_path_arg)
         if not results:
             return True, render_template("file_not_found", reply_language), {"indexed_search": False}
         if len(results) == 1:
+            if FILE_EXECUTE_NOT_NARRATE:
+                msg = _execute_file_search_hit(results[0], is_open_verb, reply_language)
+                return True, msg, {"indexed_search": False, "resolved_file_path": results[0]}
             msg = _humanize_file_result(results[0], filename, reply_language, offer_open=True) if FILE_HUMANIZE_PATHS else results[0]
             return True, msg, {"indexed_search": False, "resolved_file_path": results[0]}
-        # Multiple results: speak up to FILE_SPOKEN_RESULTS_MAX, offer more.
+        # Multiple results.
+        if FILE_EXECUTE_NOT_NARRATE and FILE_OPEN_IN_EXPLORER:
+            open_in_explorer(results[0], language=reply_language)
+            is_ar = _is_arabic_language(reply_language)
+            msg = f"لقيت {len(results)} نتيجة، فتحتلك المستكشف." if is_ar else (
+                f"Found {len(results)} results — opened Explorer."
+            )
+            return True, msg, {"indexed_search": False, "results": results}
+        # Legacy narrate path: speak up to FILE_SPOKEN_RESULTS_MAX, offer more.
         max_spoken = max(1, int(FILE_SPOKEN_RESULTS_MAX))
         spoken = results[:max_spoken]
         remaining = len(results) - len(spoken)

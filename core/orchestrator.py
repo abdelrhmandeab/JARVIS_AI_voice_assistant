@@ -60,6 +60,7 @@ from core.config import (
     GREETING_TEXT_EN,
     GREETING_PRESPEAK_SETTLE_MS,
     GREETING_DEVICE_WARMUP,
+    GREETING_BLOCKING,
     LLM_PREWARM_BEFORE_GREETING,
     LLM_AUTO_SELECT_MODEL,
     LLM_MODEL,
@@ -1498,7 +1499,7 @@ def _speak_startup_greeting():
 
     try:
         started, _ = speech_engine.speak_async(text, language=language)
-        if started:
+        if started and GREETING_BLOCKING:
             # Block until TTS finishes so the wake loop doesn't start mid-greeting.
             _wait_for_tts_completion(max_wait=30.0)
             get_logger("startup").info("Greeting spoken (lang=%s)", language)

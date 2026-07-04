@@ -608,7 +608,6 @@ ALIASES = {
     "\u0634\u063a\u0644 \u0648\u0636\u0639 \u0627\u0644\u0637\u064a\u0631\u0627\u0646": "airplane_on",
     "\u0641\u0639\u0644 \u0648\u0636\u0639 \u0627\u0644\u0637\u064a\u0631\u0627\u0646": "airplane_on",
     "\u0645\u0648\u062f \u0637\u064a\u0631\u0627\u0646": "airplane_on",
-    "\u0641\u0644\u0627\u064a\u062a \u0645\u0648\u062f": "airplane_on",
     # STT variant with tatweel/kashida: "\u0634\u063a\u0644 \u0627\u0644\u0640 Airplane mode"
     "\u0634\u063a\u0644 \u0627\u0644 airplane mode": "airplane_on",
     "\u0634\u063a\u0644 \u0627\u0644 airplane": "airplane_on",

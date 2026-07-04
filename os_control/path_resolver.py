@@ -28,7 +28,6 @@ def _sh_known_folder(guid: str) -> Optional[Path]:
     if os.name != "nt":
         return None
     try:
-        from ctypes import wintypes
         _SHGetKnownFolderPath = ctypes.windll.shell32.SHGetKnownFolderPath
         _SHGetKnownFolderPath.argtypes = [
             ctypes.c_char_p,

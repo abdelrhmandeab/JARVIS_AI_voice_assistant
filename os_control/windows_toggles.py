@@ -7,7 +7,6 @@ ms-settings:// URI fallback. Each function returns bool; never raises.
 from __future__ import annotations
 
 import ctypes
-import struct
 import subprocess
 import time
 import winreg

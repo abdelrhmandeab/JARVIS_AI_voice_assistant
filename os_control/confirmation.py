@@ -13,7 +13,6 @@ from os_control.persistence import (
     count_pending_confirmations,
     delete_confirmation,
     get_confirmation,
-    store_confirmation,
 )
 from os_control.second_factor import (
     clear_confirmation_attempts,

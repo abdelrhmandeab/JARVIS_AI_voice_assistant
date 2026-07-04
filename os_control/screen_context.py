@@ -58,7 +58,6 @@ def _get_class_name(hwnd: int, user32) -> str:
 def _get_process_name(hwnd: int) -> str:
     try:
         import psutil
-        kernel32 = ctypes.windll.kernel32
         pid = ctypes.c_ulong(0)
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         proc = psutil.Process(pid.value)

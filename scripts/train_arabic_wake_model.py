@@ -784,7 +784,7 @@ def _capture_user_negatives(
 
     phrases_hint = ", ".join(f'"{p}"' for p in _USER_NEGATIVE_PHRASES[:8])
     print(f"\n=== Recording {duration_seconds}s of NON-wake-word speech ===")
-    print(f"Say commands, greetings, random sentences — anything EXCEPT the wake word.")
+    print("Say commands, greetings, random sentences — anything EXCEPT the wake word.")
     print(f"Examples: {phrases_hint} ...")
     print("Recording starts NOW.\n")
 
