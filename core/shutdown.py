@@ -30,6 +30,13 @@ def perform_shutdown_cleanup():
             return False
         _cleanup_done = True
 
+    # Every cleanup path (SIGINT/SIGTERM, tray Quit/Restart) must also signal
+    # the main orchestrator loop to stop. Without this, the tray's Quit menu
+    # item tore down the job queue/search index/UI bridge/tray but left the
+    # wake-word listening loop running indefinitely — set here so it's
+    # impossible to run cleanup without also requesting shutdown.
+    _shutdown_event.set()
+
     try:
         job_queue_service.stop()
     except Exception as exc:

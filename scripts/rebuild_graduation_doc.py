@@ -166,7 +166,7 @@ def configure_styles(document: Document) -> None:
     normal = styles["Normal"]
     normal.font.name = "Calibri"
     normal._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
-    normal.font.size = Pt(11)
+    normal.font.size = Pt(12)
     normal.font.color.rgb = rgb(PALETTE["ink"])
 
     title = styles["Title"]
@@ -208,7 +208,7 @@ def configure_styles(document: Document) -> None:
     code = styles.add_style("Code Block", WD_STYLE_TYPE.PARAGRAPH)
     code.font.name = "Consolas"
     code._element.rPr.rFonts.set(qn("w:eastAsia"), "Consolas")
-    code.font.size = Pt(9)
+    code.font.size = Pt(10)
     code.font.color.rgb = rgb(PALETTE["ink"])
     code.paragraph_format.left_indent = Inches(0.2)
     code.paragraph_format.right_indent = Inches(0.2)
@@ -341,6 +341,18 @@ def replace_placeholder_with_paragraphs(doc_path: str | Path, placeholder_id: st
     document.save(str(doc_path))
 
 
+def _text_width(draw: "ImageDraw.ImageDraw", text: str, font) -> int:
+    """Measure rendered text width so diagram boxes can be sized to fit."""
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _node_box_width(draw: "ImageDraw.ImageDraw", title: str, subtitle: str, font, small_font, min_width: int = 330, padding: int = 56) -> int:
+    """Compute a box width wide enough for both the title and subtitle lines."""
+    widest = max(_text_width(draw, title, font), _text_width(draw, subtitle, small_font))
+    return max(min_width, widest + padding)
+
+
 def add_root_layout_diagram() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     path = FIGURE_DIR / "figure_4_1_1_repository_layout.png"
@@ -402,9 +414,6 @@ def add_root_layout_diagram() -> Path:
 def add_core_flow_diagram() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     path = FIGURE_DIR / "figure_4_2_1_core_flow.png"
-    width, height = 1900, 980
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 52)
         font = ImageFont.truetype("arial.ttf", 30)
@@ -424,44 +433,75 @@ def add_core_flow_diagram() -> Path:
         "grey": "#68707c",
     }
 
+    columns = [
+        [("orchestrator.run()", "startup, wake/listen/process loop", colors["blue"]),
+         ("RuntimeCoordinator", "interrupt phase gates", colors["grey"])],
+        [("command_router.route_command()", "parser -> code-switch -> semantic -> keyword -> LLM/tool", colors["purple"]),
+         ("memory manager/store", "fast slots + LLM context API", colors["green"])],
+        [("route_verifier.verify()", "schema, slots, question guard, risk, policy", colors["amber"]),
+         ("metrics/logger/doctor", "timing, structured logs, diagnostics", colors["grey"])],
+        [("dispatch + handlers/", "domain handlers and OS/tool adapters", colors["amber"]),
+         ("response shaping", "persona, templates, voice normalization", colors["purple"])],
+    ]
+
+    measure_image = Image.new("RGB", (10, 10), "white")
+    measure_draw = ImageDraw.Draw(measure_image)
+    col_widths = []
+    for column in columns:
+        col_width = 330
+        for title, subtitle, _ in column:
+            col_width = max(col_width, _node_box_width(measure_draw, title, subtitle, font, small_font))
+        col_widths.append(col_width)
+
+    gap_x, gap_y = 40, 135
+    box_h = 130
+    col_x = [70]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w + gap_x)
+    width = col_x[-1] + col_widths[-1] + 70
+    height = 980
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
     draw.text((70, 45), "Figure 4.2.1 - core/ internal data flow", fill=colors["ink"], font=title_font)
     draw.text((70, 110), "Runtime loop, routing gate, dispatch, memory, and observability.", fill=colors["muted"], font=small_font)
 
-    nodes = [
-        ("orchestrator.run()", "startup, wake/listen/process loop", colors["blue"], 80, 255),
-        ("RuntimeCoordinator", "interrupt phase gates", colors["grey"], 80, 520),
-        ("command_router.route_command()", "parser -> code-switch -> semantic -> keyword -> LLM/tool", colors["purple"], 490, 255),
-        ("route_verifier.verify()", "schema, slots, question guard, risk, policy", colors["amber"], 930, 255),
-        ("dispatch + handlers/", "domain handlers and OS/tool adapters", colors["amber"], 1320, 255),
-        ("response shaping", "persona, templates, voice normalization", colors["purple"], 1320, 520),
-        ("memory manager/store", "fast slots + LLM context API", colors["green"], 490, 520),
-        ("metrics/logger/doctor", "timing, structured logs, diagnostics", colors["grey"], 930, 520),
-    ]
+    row_y = [255, 255 + box_h + gap_y]
+    centers_top = []
+    centers_bottom = []
+    for col_index, column in enumerate(columns):
+        x = col_x[col_index]
+        w = col_widths[col_index]
+        for row_index, (title, subtitle, color) in enumerate(column):
+            y = row_y[row_index]
+            draw.rounded_rectangle((x, y, x + w, y + box_h), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
+            draw.rectangle((x, y, x + 12, y + box_h), fill=color)
+            draw.text((x + 28, y + 25), title, fill=colors["ink"], font=font)
+            draw.text((x + 28, y + 72), subtitle, fill=colors["muted"], font=small_font)
+            if row_index == 0:
+                centers_top.append((x, x + w))
+            else:
+                centers_bottom.append((x, x + w))
 
-    for title, subtitle, color, x, y in nodes:
-        draw.rounded_rectangle((x, y, x + 330, y + 130), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
-        draw.rectangle((x, y, x + 12, y + 130), fill=color)
-        draw.text((x + 28, y + 25), title, fill=colors["ink"], font=font)
-        draw.text((x + 28, y + 72), subtitle, fill=colors["muted"], font=small_font)
+    for i in range(len(columns) - 1):
+        y = row_y[0] + box_h // 2
+        draw.line((centers_top[i][1], y, centers_top[i + 1][0], y), fill=colors["line"], width=5)
+        ex = centers_top[i + 1][0]
+        draw.polygon([(ex, y), (ex - 14, y - 8), (ex - 14, y + 8)], fill=colors["line"])
+        y2 = row_y[1] + box_h // 2
+        draw.line((centers_bottom[i][1], y2, centers_bottom[i + 1][0], y2), fill=colors["line"], width=5)
+        ex2 = centers_bottom[i + 1][0]
+        draw.polygon([(ex2, y2), (ex2 + 14, y2 - 8), (ex2 + 14, y2 + 8)], fill=colors["line"])
 
-    arrows = [
-        ((410, 320), (490, 320)),
-        ((820, 320), (930, 320)),
-        ((1260, 320), (1320, 320)),
-        ((1485, 385), (1485, 520)),
-        ((1320, 585), (1260, 585)),
-        ((930, 585), (820, 585)),
-        ((655, 520), (655, 385)),
-        ((245, 385), (245, 520)),
-        ((410, 585), (490, 585)),
-        ((1095, 385), (1095, 520)),
-    ]
-    for start, end in arrows:
-        draw.line((*start, *end), fill=colors["line"], width=5)
-        ex, ey = end
-        draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
+    for col_index in range(len(columns)):
+        cx = col_x[col_index] + col_widths[col_index] // 2
+        y_top = row_y[0] + box_h
+        y_bottom = row_y[1]
+        draw.line((cx, y_top, cx, y_bottom), fill=colors["line"], width=5)
+        draw.polygon([(cx, y_bottom), (cx - 8, y_bottom - 14), (cx + 8, y_bottom - 14)], fill=colors["line"])
 
-    draw.text((80, 820), "Phase boundary: core/ documents in-process logic. Persisted memory files are documented in Section 4.3.", fill=colors["muted"], font=small_font)
+    draw.text((70, height - 160), "Phase boundary: core/ documents in-process logic. Persisted memory files are documented in Section 4.3.", fill=colors["muted"], font=small_font)
     image.save(path, quality=95)
     return path
 
@@ -768,9 +808,6 @@ def json_memory_summary() -> dict:
 def add_audio_flow_diagram() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     path = FIGURE_DIR / "figure_4_4_1_audio_flow.png"
-    width, height = 1900, 980
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 52)
         font = ImageFont.truetype("arial.ttf", 30)
@@ -783,28 +820,69 @@ def add_audio_flow_diagram() -> Path:
         "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
         "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
     }
+
+    columns = [
+        [("wake_word.py", "openWakeWord ONNX + EMA/peak gate", colors["blue"]),
+         ("cues.py", "short wake feedback tones", colors["grey"])],
+        [("mic.py / streaming_stt.py", "VAD capture + partials", colors["blue"]),
+         ("vad.py", "Silero ONNX or energy fallback", colors["amber"])],
+        [("stt.py", "ElevenLabs + Faster-Whisper fallback", colors["purple"]),
+         ("tts.py", "ElevenLabs/Edge sentence playback", colors["green"])],
+        [("core router", "text leaves audio/", colors["grey"]),
+         ("wake_enrollment.py", "sample scoring + threshold recommendation", colors["amber"])],
+    ]
+
+    measure_image = Image.new("RGB", (10, 10), "white")
+    measure_draw = ImageDraw.Draw(measure_image)
+    col_widths = []
+    for column in columns:
+        col_width = 360
+        for title, subtitle, _ in column:
+            col_width = max(col_width, _node_box_width(measure_draw, title, subtitle, font, small_font))
+        col_widths.append(col_width)
+
+    gap_x, gap_y = 40, 135
+    box_h = 135
+    col_x = [80]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w + gap_x)
+    width = col_x[-1] + col_widths[-1] + 80
+    height = 980
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
     draw.text((70, 45), "Figure 4.4.1 - audio/ runtime pipeline", fill=colors["ink"], font=title_font)
     draw.text((70, 110), "Wake decision, VAD capture, STT, and TTS playback.", fill=colors["muted"], font=small_font)
-    nodes = [
-        ("wake_word.py", "openWakeWord ONNX + EMA/peak gate", colors["blue"], 80, 260),
-        ("mic.py / streaming_stt.py", "VAD capture + partials", colors["blue"], 510, 260),
-        ("stt.py", "ElevenLabs + Faster-Whisper fallback", colors["purple"], 940, 260),
-        ("core router", "text leaves audio/", colors["grey"], 1370, 260),
-        ("tts.py", "ElevenLabs/Edge sentence playback", colors["green"], 940, 560),
-        ("vad.py", "Silero ONNX or energy fallback", colors["amber"], 510, 560),
-        ("cues.py", "short wake feedback tones", colors["grey"], 80, 560),
-        ("wake_enrollment.py", "sample scoring + threshold recommendation", colors["amber"], 1370, 560),
-    ]
-    for title, subtitle, color, x, y in nodes:
-        draw.rounded_rectangle((x, y, x + 360, y + 135), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
-        draw.rectangle((x, y, x + 12, y + 135), fill=color)
-        draw.text((x + 28, y + 24), title, fill=colors["ink"], font=font)
-        draw.text((x + 28, y + 74), subtitle, fill=colors["muted"], font=small_font)
-    for start, end in [((440, 328), (510, 328)), ((870, 328), (940, 328)), ((1300, 328), (1370, 328)), ((1120, 395), (1120, 560)), ((690, 560), (690, 395)), ((260, 560), (260, 395))]:
-        draw.line((*start, *end), fill=colors["line"], width=5)
-        ex, ey = end
-        draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
-    draw.text((80, 850), "Training data/model provenance is deferred to Section 4.5; this section covers runtime audio behavior.", fill=colors["muted"], font=small_font)
+
+    row_y = [260, 260 + box_h + gap_y]
+    tops = []
+    bottoms = []
+    for col_index, column in enumerate(columns):
+        x = col_x[col_index]
+        w = col_widths[col_index]
+        for row_index, (title, subtitle, color) in enumerate(column):
+            y = row_y[row_index]
+            draw.rounded_rectangle((x, y, x + w, y + box_h), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
+            draw.rectangle((x, y, x + 12, y + box_h), fill=color)
+            draw.text((x + 28, y + 24), title, fill=colors["ink"], font=font)
+            draw.text((x + 28, y + 74), subtitle, fill=colors["muted"], font=small_font)
+            (tops if row_index == 0 else bottoms).append((x, x + w))
+
+    for i in range(len(columns) - 1):
+        y = row_y[0] + box_h // 2
+        draw.line((tops[i][1], y, tops[i + 1][0], y), fill=colors["line"], width=5)
+        ex = tops[i + 1][0]
+        draw.polygon([(ex, y), (ex - 14, y - 8), (ex - 14, y + 8)], fill=colors["line"])
+
+    for col_index in (1, 2):
+        cx = col_x[col_index] + col_widths[col_index] // 2
+        y_top = row_y[0] + box_h
+        y_bottom = row_y[1]
+        draw.line((cx, y_bottom, cx, y_top), fill=colors["line"], width=5)
+        draw.polygon([(cx, y_top), (cx - 8, y_top + 14), (cx + 8, y_top + 14)], fill=colors["line"])
+
+    draw.text((80, height - 130), "Training data/model provenance is deferred to Section 4.5; this section covers runtime audio behavior.", fill=colors["muted"], font=small_font)
     image.save(path, quality=95)
     return path
 
@@ -812,9 +890,6 @@ def add_audio_flow_diagram() -> Path:
 def add_wake_training_flow_diagram() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     path = FIGURE_DIR / "figure_4_5_1_wake_training_flow.png"
-    width, height = 1900, 980
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 52)
         font = ImageFont.truetype("arial.ttf", 30)
@@ -827,25 +902,67 @@ def add_wake_training_flow_diagram() -> Path:
         "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
         "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
     }
+
+    measure_image = Image.new("RGB", (10, 10), "white")
+    measure_draw = ImageDraw.Draw(measure_image)
+    box_h = 135
+
+    left_nodes = [
+        ("positive_train/val", "English + Arabic wake clips", colors["blue"]),
+        ("negative_train/val", "background, near-phrase, false-positive clips", colors["amber"]),
+    ]
+    left_w = max(_node_box_width(measure_draw, t, s, font, small_font) for t, s, _ in left_nodes)
+
+    chain_nodes = [
+        ("features/*.npy", "float32 tensors (N, 41, 96)", colors["green"]),
+        ("model training", "code not present in this folder", colors["grey"]),
+        ("deployed ONNX", "loaded at runtime by audio/wake_word.py", colors["purple"]),
+    ]
+    chain_widths = [_node_box_width(measure_draw, t, s, font, small_font) for t, s, _ in chain_nodes]
+
+    gap_x = 60
+    left_x = 80
+    chain_x = [left_x + left_w + 140]
+    for w in chain_widths[:-1]:
+        chain_x.append(chain_x[-1] + w + gap_x)
+    width = chain_x[-1] + chain_widths[-1] + 80
+    height = 980
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
     draw.text((70, 45), "Figure 4.5.1 - wake-word dataset/training artifacts", fill=colors["ink"], font=title_font)
     draw.text((70, 110), "Observed unified wake-word folder: WAV splits plus precomputed feature tensors.", fill=colors["muted"], font=small_font)
-    nodes = [
-        ("positive_train/val", "English + Arabic wake clips", colors["blue"], 80, 280),
-        ("negative_train/val", "background, near-phrase, false-positive clips", colors["amber"], 80, 560),
-        ("features/*.npy", "float32 tensors (N, 41, 96)", colors["green"], 570, 420),
-        ("model training", "code not present in this folder", colors["grey"], 1030, 420),
-        ("deployed ONNX", "loaded at runtime by audio/wake_word.py", colors["purple"], 1460, 420),
-    ]
-    for title, subtitle, color, x, y in nodes:
-        draw.rounded_rectangle((x, y, x + 350, y + 135), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
-        draw.rectangle((x, y, x + 12, y + 135), fill=color)
-        draw.text((x + 28, y + 24), title, fill=colors["ink"], font=font)
-        draw.text((x + 28, y + 74), subtitle, fill=colors["muted"], font=small_font)
-    for start, end in [((430, 348), (570, 488)), ((430, 628), (570, 488)), ((920, 488), (1030, 488)), ((1380, 488), (1460, 488))]:
-        draw.line((*start, *end), fill=colors["line"], width=5)
-        ex, ey = end
-        draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
-    draw.text((80, 850), "This phase documents data/provenance only. Runtime wake-decision logic is in Section 4.4.", fill=colors["muted"], font=small_font)
+
+    left_y = [280, 560]
+    for (title, subtitle, color), y in zip(left_nodes, left_y):
+        draw.rounded_rectangle((left_x, y, left_x + left_w, y + box_h), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((left_x, y, left_x + 12, y + box_h), fill=color)
+        draw.text((left_x + 28, y + 24), title, fill=colors["ink"], font=font)
+        draw.text((left_x + 28, y + 74), subtitle, fill=colors["muted"], font=small_font)
+
+    chain_y = 420
+    for i, ((title, subtitle, color), x, w) in enumerate(zip(chain_nodes, chain_x, chain_widths)):
+        draw.rounded_rectangle((x, chain_y, x + w, chain_y + box_h), radius=18, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, chain_y, x + 12, chain_y + box_h), fill=color)
+        draw.text((x + 28, chain_y + 24), title, fill=colors["ink"], font=font)
+        draw.text((x + 28, chain_y + 74), subtitle, fill=colors["muted"], font=small_font)
+
+    converge_x = chain_x[0]
+    converge_y = chain_y + box_h // 2
+    for y in left_y:
+        draw.line((left_x + left_w, y + box_h // 2, converge_x, converge_y), fill=colors["line"], width=5)
+    ex, ey = converge_x, converge_y
+    draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
+
+    for i in range(len(chain_nodes) - 1):
+        start_x = chain_x[i] + chain_widths[i]
+        end_x = chain_x[i + 1]
+        y = chain_y + box_h // 2
+        draw.line((start_x, y, end_x, y), fill=colors["line"], width=5)
+        draw.polygon([(end_x, y), (end_x - 14, y - 8), (end_x - 14, y + 8)], fill=colors["line"])
+
+    draw.text((80, height - 130), "This phase documents data/provenance only. Runtime wake-decision logic is in Section 4.4.", fill=colors["muted"], font=small_font)
     image.save(path, quality=95)
     return path
 
@@ -857,9 +974,6 @@ def wake_training_root() -> Path:
 def add_nlp_flow_diagram() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     path = FIGURE_DIR / "figure_4_6_1_nlp_flow.png"
-    width, height = 1900, 900
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 50)
         font = ImageFont.truetype("arial.ttf", 29)
@@ -872,28 +986,89 @@ def add_nlp_flow_diagram() -> Path:
         "soft": "#f6f8fb", "blue": "#1f6feb", "purple": "#7c3aed",
         "amber": "#b26a00", "green": "#188a42", "grey": "#68707c",
     }
+
+    measure_image = Image.new("RGB", (10, 10), "white")
+    measure_draw = ImageDraw.Draw(measure_image)
+    box_h = 125
+
+    chain_specs = [
+        ("Recognized text", "input from audio/core", colors["grey"]),
+        ("codeswitching.py", "Arabic normalization, script counts, numbers", colors["blue"]),
+        ("code_switch_router.py", "verb + entity shortcut to ParsedCommand", colors["green"]),
+    ]
+    split_specs = [
+        ("semantic_router.py", "top-k embedding similarity", colors["purple"]),
+        ("fuzzy + keyword", "noisy STT keyword evidence", colors["amber"]),
+    ]
+    tail_specs = [
+        ("nlu.py", "slot/entity enrichment + missing slots", colors["blue"]),
+    ]
+
+    chain_widths = [_node_box_width(measure_draw, t, s, font, small_font, min_width=290) for t, s, _ in chain_specs]
+    split_width = max(_node_box_width(measure_draw, t, s, font, small_font, min_width=290) for t, s, _ in split_specs)
+    tail_width = _node_box_width(measure_draw, tail_specs[0][0], tail_specs[0][1], font, small_font, min_width=290)
+
+    gap_x = 50
+    x = 70
+    chain_x = []
+    for w in chain_widths:
+        chain_x.append(x)
+        x += w + gap_x
+    split_x = x
+    x += split_width + gap_x
+    tail_x = x
+    width = tail_x + tail_width + 70
+    height = 900
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
     draw.text((70, 45), "Figure 4.6.1 - nlp/ understanding flow", fill=colors["ink"], font=title_font)
     draw.text((70, 108), "Folder-local text understanding stages before command execution.", fill=colors["muted"], font=small_font)
-    nodes = [
-        ("Recognized text", "input from audio/core", colors["grey"], 70, 300),
-        ("codeswitching.py", "Arabic normalization, script counts, numbers", colors["blue"], 410, 300),
-        ("code_switch_router.py", "verb + entity shortcut to ParsedCommand", colors["green"], 780, 300),
-        ("semantic_router.py", "top-k embedding similarity", colors["purple"], 1160, 220),
-        ("fuzzy + keyword", "noisy STT keyword evidence", colors["amber"], 1160, 425),
-        ("nlu.py", "slot/entity enrichment + missing slots", colors["blue"], 1530, 300),
-    ]
-    for title, subtitle, color, x, y in nodes:
-        draw.rounded_rectangle((x, y, x + 290, y + 125), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
-        draw.rectangle((x, y, x + 12, y + 125), fill=color)
-        draw.text((x + 28, y + 24), title, fill=colors["ink"], font=font)
-        draw.text((x + 28, y + 70), subtitle, fill=colors["muted"], font=small_font)
-    for start, end in [((360, 360), (410, 360)), ((700, 360), (780, 360)), ((1070, 330), (1160, 282)), ((1070, 390), (1160, 487)), ((1450, 282), (1530, 330)), ((1450, 487), (1530, 390))]:
-        draw.line((*start, *end), fill=colors["line"], width=5)
-        ex, ey = end
+
+    chain_y = 300
+    for (title, subtitle, color), bx, bw in zip(chain_specs, chain_x, chain_widths):
+        draw.rounded_rectangle((bx, chain_y, bx + bw, chain_y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((bx, chain_y, bx + 12, chain_y + box_h), fill=color)
+        draw.text((bx + 28, chain_y + 24), title, fill=colors["ink"], font=font)
+        draw.text((bx + 28, chain_y + 70), subtitle, fill=colors["muted"], font=small_font)
+    for i in range(len(chain_specs) - 1):
+        y = chain_y + box_h // 2
+        start_x = chain_x[i] + chain_widths[i]
+        end_x = chain_x[i + 1]
+        draw.line((start_x, y, end_x, y), fill=colors["line"], width=5)
+        draw.polygon([(end_x, y), (end_x - 14, y - 8), (end_x - 14, y + 8)], fill=colors["line"])
+
+    split_y = [220, 425]
+    for (title, subtitle, color), y in zip(split_specs, split_y):
+        draw.rounded_rectangle((split_x, y, split_x + split_width, y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((split_x, y, split_x + 12, y + box_h), fill=color)
+        draw.text((split_x + 28, y + 24), title, fill=colors["ink"], font=font)
+        draw.text((split_x + 28, y + 70), subtitle, fill=colors["muted"], font=small_font)
+
+    last_chain_x = chain_x[-1] + chain_widths[-1]
+    last_chain_mid = chain_y + box_h // 2
+    for y in split_y:
+        draw.line((last_chain_x, last_chain_mid, split_x, y + box_h // 2), fill=colors["line"], width=5)
+        ex, ey = split_x, y + box_h // 2
         draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
-    draw.rounded_rectangle((390, 650, 1510, 755), radius=14, fill="#ffffff", outline=colors["line"], width=3)
-    draw.text((425, 682), "Acceptance rule used by caller: best >= tau and (best - second) >= delta; near ties defer.", fill=colors["ink"], font=font)
-    draw.text((70, 815), "No standalone nlp/text_normalizer.py is present; normalization evidence is in codeswitching.py and fuzzy_matcher.py.", fill=colors["muted"], font=small_font)
+
+    tail_y = 300
+    draw.rounded_rectangle((tail_x, tail_y, tail_x + tail_width, tail_y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+    draw.rectangle((tail_x, tail_y, tail_x + 12, tail_y + box_h), fill=tail_specs[0][2])
+    draw.text((tail_x + 28, tail_y + 24), tail_specs[0][0], fill=colors["ink"], font=font)
+    draw.text((tail_x + 28, tail_y + 70), tail_specs[0][1], fill=colors["muted"], font=small_font)
+
+    for y in split_y:
+        draw.line((split_x + split_width, y + box_h // 2, tail_x, tail_y + box_h // 2), fill=colors["line"], width=5)
+        ex, ey = tail_x, tail_y + box_h // 2
+        draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
+
+    callout_left = chain_x[1]
+    callout_right = tail_x + tail_width
+    draw.rounded_rectangle((callout_left, 650, callout_right, 755), radius=14, fill="#ffffff", outline=colors["line"], width=3)
+    draw.text((callout_left + 35, 682), "Acceptance rule used by caller: best >= tau and (best - second) >= delta; near ties defer.", fill=colors["ink"], font=font)
+    draw.text((70, height - 85), "No standalone nlp/text_normalizer.py is present; normalization evidence is in codeswitching.py and fuzzy_matcher.py.", fill=colors["muted"], font=small_font)
     image.save(path, quality=95)
     return path
 
@@ -948,9 +1123,6 @@ def add_llm_flow_diagram() -> Path:
 def add_os_control_flow_diagram() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     path = FIGURE_DIR / "figure_4_8_1_os_control_flow.png"
-    width, height = 2000, 980
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 50)
         font = ImageFont.truetype("arial.ttf", 28)
@@ -964,28 +1136,84 @@ def add_os_control_flow_diagram() -> Path:
         "amber": "#b26a00", "green": "#188a42", "red": "#b3261e",
         "grey": "#68707c",
     }
+
+    measure_image = Image.new("RGB", (10, 10), "white")
+    measure_draw = ImageDraw.Draw(measure_image)
+    box_h = 130
+
+    # Columns 0-3 have only a top-row node; column 4 has both a top and bottom node.
+    top_row = [
+        ("Routed action", "system/app/file/control request", colors["grey"]),
+        ("policy.py + risk_policy.py", "allowed? risk tier?", colors["amber"]),
+        ("confirmation.py", "pending action + PIN if needed", colors["red"]),
+        ("adapter modules", "native, PowerShell, WinRT, Explorer", colors["blue"]),
+        ("verify OS state", "readback/poll/window check", colors["green"]),
+    ]
+    bottom_pair = [
+        ("action_log.py + persistence.py", "hash-chained audit + rollback", colors["grey"]),
+        ("adapter_result.py", "success/failure/confirm shape", colors["purple"]),
+    ]
+
+    col_widths = [_node_box_width(measure_draw, t, s, font, small_font, min_width=300) for t, s, _ in top_row]
+    # The bottom row spans under columns 3-4; make sure those two columns are wide enough
+    # for the bottom labels too, since the bottom pair sits directly beneath them.
+    bottom_widths = [_node_box_width(measure_draw, t, s, font, small_font, min_width=300) for t, s, _ in bottom_pair]
+    col_widths[3] = max(col_widths[3], bottom_widths[0])
+    col_widths[4] = max(col_widths[4], bottom_widths[1])
+
+    gap_x = 50
+    col_x = [70]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w + gap_x)
+    width = col_x[-1] + col_widths[-1] + 70
+    height = 980
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
     draw.text((70, 45), "Figure 4.8.1 - os_control/ verified side-effect flow", fill=colors["ink"], font=title_font)
     draw.text((70, 108), "Routed action, policy/risk, confirmation/PIN, adapter execution, state verification, and audit logging.", fill=colors["muted"], font=small_font)
 
-    nodes = [
-        ("Routed action", "system/app/file/control request", colors["grey"], 70, 315),
-        ("policy.py + risk_policy.py", "allowed? risk tier?", colors["amber"], 390, 315),
-        ("confirmation.py", "pending action + PIN if needed", colors["red"], 740, 315),
-        ("adapter modules", "native, PowerShell, WinRT, Explorer", colors["blue"], 1090, 315),
-        ("verify OS state", "readback/poll/window check", colors["green"], 1440, 315),
-        ("adapter_result.py", "success/failure/confirm shape", colors["purple"], 1440, 585),
-        ("action_log.py + persistence.py", "hash-chained audit + rollback", colors["grey"], 1090, 585),
-    ]
-    for title, subtitle, color, x, y in nodes:
-        draw.rounded_rectangle((x, y, x + 300, y + 130), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
-        draw.rectangle((x, y, x + 12, y + 130), fill=color)
-        draw.text((x + 28, y + 24), title, fill=colors["ink"], font=font)
-        draw.text((x + 28, y + 72), subtitle, fill=colors["muted"], font=small_font)
-    for start, end in [((370, 380), (390, 380)), ((690, 380), (740, 380)), ((1040, 380), (1090, 380)), ((1390, 380), (1440, 380)), ((1590, 445), (1590, 585)), ((1440, 650), (1390, 650)), ((1240, 585), (1240, 445))]:
-        draw.line((*start, *end), fill=colors["line"], width=5)
-        ex, ey = end
-        draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
-    draw.rounded_rectangle((70, 760, 1860, 870), radius=14, fill="#ffffff", outline=colors["line"], width=3)
+    top_y = 315
+    for (title, subtitle, color), x, w in zip(top_row, col_x, col_widths):
+        draw.rounded_rectangle((x, top_y, x + w, top_y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, top_y, x + 12, top_y + box_h), fill=color)
+        draw.text((x + 28, top_y + 24), title, fill=colors["ink"], font=font)
+        draw.text((x + 28, top_y + 72), subtitle, fill=colors["muted"], font=small_font)
+
+    for i in range(len(top_row) - 1):
+        y = top_y + box_h // 2
+        start_x = col_x[i] + col_widths[i]
+        end_x = col_x[i + 1]
+        draw.line((start_x, y, end_x, y), fill=colors["line"], width=5)
+        draw.polygon([(end_x, y), (end_x - 14, y - 8), (end_x - 14, y + 8)], fill=colors["line"])
+
+    bottom_y = 585
+    bottom_x = [col_x[3], col_x[4]]
+    bottom_w = [col_widths[3], col_widths[4]]
+    for (title, subtitle, color), x, w in zip(bottom_pair, bottom_x, bottom_w):
+        draw.rounded_rectangle((x, bottom_y, x + w, bottom_y + box_h), radius=16, fill=colors["soft"], outline=colors["line"], width=3)
+        draw.rectangle((x, bottom_y, x + 12, bottom_y + box_h), fill=color)
+        draw.text((x + 28, bottom_y + 24), title, fill=colors["ink"], font=font)
+        draw.text((x + 28, bottom_y + 72), subtitle, fill=colors["muted"], font=small_font)
+
+    # verify OS state -> adapter_result.py (vertical, column 4)
+    cx4 = col_x[4] + col_widths[4] // 2
+    draw.line((cx4, top_y + box_h, cx4, bottom_y), fill=colors["line"], width=5)
+    draw.polygon([(cx4, bottom_y), (cx4 - 8, bottom_y - 14), (cx4 + 8, bottom_y - 14)], fill=colors["line"])
+
+    # adapter_result.py -> action_log.py + persistence.py (horizontal, bottom row, right to left)
+    by = bottom_y + box_h // 2
+    draw.line((bottom_x[1], by, bottom_x[0] + bottom_w[0], by), fill=colors["line"], width=5)
+    ex = bottom_x[0] + bottom_w[0]
+    draw.polygon([(ex, by), (ex + 14, by - 8), (ex + 14, by + 8)], fill=colors["line"])
+
+    # action_log.py + persistence.py -> adapter modules (vertical, column 3)
+    cx3 = col_x[3] + col_widths[3] // 2
+    draw.line((cx3, bottom_y, cx3, top_y + box_h), fill=colors["line"], width=5)
+    draw.polygon([(cx3, top_y + box_h), (cx3 - 8, top_y + box_h - 14), (cx3 + 8, top_y + box_h - 14)], fill=colors["line"])
+
+    draw.rounded_rectangle((70, 760, width - 70, 870), radius=14, fill="#ffffff", outline=colors["line"], width=3)
     draw.text((105, 790), "Contract: an OS action should report success only when the adapter returns success and, where implemented, read-back verification confirms the state.", fill=colors["ink"], font=font)
     draw.text((105, 835), "Degraded paths return explicit failure/admin/manual-settings messages instead of claiming success.", fill=colors["muted"], font=small_font)
     image.save(path, quality=95)
@@ -1029,9 +1257,10 @@ def add_tools_flow_diagram() -> Path:
         draw.line((*start, *end), fill=colors["line"], width=5)
         ex, ey = end
         draw.polygon([(ex, ey), (ex - 14, ey - 8), (ex - 14, ey + 8)], fill=colors["line"])
-    draw.rounded_rectangle((285, 675, 1615, 770), radius=14, fill="#ffffff", outline=colors["line"], width=3)
-    draw.text((320, 705), "calculator.py is a separate fast path: math-looking text -> safe expression cleanup -> minimal eval namespace -> formatted number.", fill=colors["ink"], font=font)
-    draw.text((70, 820), "Voice normalizer internals are outside this phase; tools/live_data.py only calls the normalizer before returning blocks.", fill=colors["muted"], font=small_font)
+    draw.rounded_rectangle((70, 675, width - 70, 800), radius=14, fill="#ffffff", outline=colors["line"], width=3)
+    draw.text((105, 700), "calculator.py is a separate fast path: math-looking text -> safe expression", fill=colors["ink"], font=font)
+    draw.text((105, 745), "cleanup -> minimal eval namespace -> formatted number.", fill=colors["ink"], font=font)
+    draw.text((70, 850), "Voice normalizer internals are outside this phase; tools/live_data.py only calls the normalizer before returning blocks.", fill=colors["muted"], font=small_font)
     image.save(path, quality=95)
     return path
 
