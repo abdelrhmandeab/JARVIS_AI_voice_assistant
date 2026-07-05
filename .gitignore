@@ -19,4 +19,5 @@ build/
 # Caches
 .jarvis_cache/
 .jarvis_kb/
-
+data/
+wake word data/
