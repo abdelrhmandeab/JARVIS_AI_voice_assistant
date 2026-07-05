@@ -15,11 +15,13 @@ from ui.events import (
     COMMAND_FEATURE_FLAG,
     COMMAND_HEALTH_REQUEST,
     COMMAND_MUTE_TOGGLE,
+    COMMAND_PIN_ATTEMPT,
     COMMAND_SETTING_UPDATE,
     COMMAND_TEXT,
     EVENT_CONFIG,
     EVENT_ERROR,
     EVENT_HEALTH,
+    EVENT_PIN_RESULT,
     EVENT_RESPONSE,
     EVENT_STATE_CHANGED,
     make_event,
@@ -194,6 +196,20 @@ class JarvisBridge:
             self.broadcast(make_event(EVENT_RESPONSE, text=str(response or ""), language=language))
             return
 
+        if command_type == COMMAND_PIN_ATTEMPT:
+            pin = str(message.get("pin") or "")
+            result = await asyncio.to_thread(self._apply_pin_attempt, pin)
+            self.broadcast(make_event(EVENT_RESPONSE, text=result["message"], language=result["language"]))
+            self.broadcast(
+                make_event(
+                    EVENT_PIN_RESULT,
+                    status=result["status"],
+                    message=result["message"],
+                    attempts_remaining=result["attempts_remaining"],
+                )
+            )
+            return
+
         if command_type == COMMAND_MUTE_TOGGLE:
             self.muted = bool(message.get("muted"))
             logger.info("UI bridge mute toggled: %s", self.muted)
@@ -280,6 +296,59 @@ class JarvisBridge:
         except Exception:
             logger.exception("UI bridge text_command routing failed")
             return "I could not process that command."
+
+    def _apply_pin_attempt(self, pin: str) -> dict:
+        """Verify a UI-submitted PIN. A thin wrapper around the same
+        verify/execute call the voice path uses (command_router.py's
+        OS_PIN_CONFIRM dispatch) — this call is the single source of truth for
+        attempt-counting, so it must run exactly once per submission.
+        """
+        from core.command_router import _execute_confirmed_payload
+        from core.response_templates import render_template
+        from core.session_memory import session_memory
+        from os_control.confirmation import confirmation_manager
+
+        language = session_memory.get_preferred_language() or "en"
+        try:
+            status, message, payload = confirmation_manager.verify_pin_and_execute(pin)
+        except Exception:
+            logger.exception("UI bridge pin_attempt verification failed")
+            return {
+                "status": "wrong",
+                "message": "Sorry, I had an internal error.",
+                "language": language,
+                "attempts_remaining": confirmation_manager.pin_attempts_remaining(),
+            }
+
+        if status == "executed":
+            try:
+                _success, response_text, _meta = _execute_confirmed_payload(payload)
+            except Exception:
+                logger.exception("UI bridge pin_attempt execution failed")
+                response_text = "Sorry, I had an internal error."
+            session_memory.clear_pending_confirmation_token()
+        elif status == "wrong":
+            response_text = render_template("pin_wrong", language)
+        elif status == "locked":
+            session_memory.clear_pending_confirmation_token()
+            response_text = render_template("pin_locked", language, message=message)
+        else:
+            session_memory.clear_pending_confirmation_token()
+            response_text = render_template("missing_pending_confirmation", language)
+
+        try:
+            from audio.tts import speech_engine
+
+            speech_engine.speak_async(response_text, language=language)
+        except Exception:
+            logger.debug("Failed to speak pin_attempt response", exc_info=True)
+
+        return {
+            "status": status,
+            "message": response_text,
+            "language": language,
+            "attempts_remaining": confirmation_manager.pin_attempts_remaining(),
+        }
 
     def _register_client(self, websocket: WebSocket) -> None:
         with self.lock:

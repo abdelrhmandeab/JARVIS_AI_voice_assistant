@@ -59,6 +59,19 @@ export interface ConfigEvent {
   type: 'config';
   values: ConfigValues;
 }
+export interface PinRequiredEvent {
+  type: 'pin_required';
+  description: string;
+  attempts_remaining: number;
+  expires_in_seconds: number;
+}
+export type PinResultStatus = 'executed' | 'wrong' | 'locked' | 'no_pending';
+export interface PinResultEvent {
+  type: 'pin_result';
+  status: PinResultStatus;
+  message: string;
+  attempts_remaining: number;
+}
 
 export type EngineEvent =
   | StateChangedEvent
@@ -68,7 +81,9 @@ export type EngineEvent =
   | AmplitudeEvent
   | MetricsEvent
   | ErrorEvent
-  | ConfigEvent;
+  | ConfigEvent
+  | PinRequiredEvent
+  | PinResultEvent;
 
 // UI -> Engine commands
 export interface TextCommandMessage {
@@ -93,13 +108,18 @@ export interface FeatureFlagMessage {
 export interface ConfigRequestMessage {
   type: 'config_request';
 }
+export interface PinAttemptMessage {
+  type: 'pin_attempt';
+  pin: string;
+}
 
 export type UICommand =
   | TextCommandMessage
   | MuteToggleMessage
   | SettingUpdateMessage
   | FeatureFlagMessage
-  | ConfigRequestMessage;
+  | ConfigRequestMessage
+  | PinAttemptMessage;
 
 // State colors matching Python ui/tray.py
 export const STATE_COLORS: Record<DialogueState, string> = {
@@ -113,13 +133,16 @@ export const STATE_COLORS: Record<DialogueState, string> = {
 } as const;
 
 export const MOCK_WS_PORT = 8765;
+// Matches core.config.UI_BRIDGE_PORT's default (JARVIS_UI_BRIDGE_PORT).
+export const DEFAULT_BRIDGE_PORT = 9720;
 
 // WebSocket URL the UI connects to.
-// Defaults to the in-process Vite mock server (port 8765, no path).
-// Set VITE_JARVIS_WS_URL to target the real Python bridge, e.g.
-//   VITE_JARVIS_WS_URL=ws://127.0.0.1:9720/ws
+// Defaults to the real Python bridge (ui/bridge.py) at ws://127.0.0.1:9720/ws.
+// `npm run dev:mock` (vite --mode mock) switches the default to the in-process
+// Vite mock server instead. VITE_JARVIS_WS_URL always overrides either default.
 // `import.meta.env` is undefined when this module is evaluated in a plain Node
 // context (e.g. vite.config.ts loading the mock server), so guard the access.
 const viteEnv = import.meta.env as ImportMetaEnv | undefined;
 export const JARVIS_WS_URL =
-  viteEnv?.VITE_JARVIS_WS_URL ?? `ws://localhost:${MOCK_WS_PORT}`;
+  viteEnv?.VITE_JARVIS_WS_URL ??
+  (viteEnv?.MODE === 'mock' ? `ws://localhost:${MOCK_WS_PORT}` : `ws://127.0.0.1:${DEFAULT_BRIDGE_PORT}/ws`);

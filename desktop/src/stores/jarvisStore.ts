@@ -1,11 +1,25 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import type { ConfigValues, DialogueState, EngineEvent, FeatureFlags, Language } from '../protocol';
+import type { ConfigValues, DialogueState, EngineEvent, FeatureFlags, Language, PinResultStatus } from '../protocol';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 export type AvatarDirection = 'aurora' | 'glyph' | 'glassai' | 'companion';
 export type AppView = 'overlay' | 'dashboard';
 export type UiLanguage = Language | 'auto';
+
+export interface PinRequiredState {
+  description: string;
+  attemptsRemaining: number;
+  expiresInSeconds: number;
+  receivedAt: number;
+}
+
+export interface PinResultState {
+  status: PinResultStatus;
+  message: string;
+  attemptsRemaining: number;
+  receivedAt: number;
+}
 
 interface JarvisState {
   connectionStatus: ConnectionStatus;
@@ -25,6 +39,8 @@ interface JarvisState {
   avatarDirection: AvatarDirection;
   previewDialogueState: DialogueState | null;
   textPromptEnabled: boolean;
+  pinRequired: PinRequiredState | null;
+  pinResult: PinResultState | null;
   dispatch: (event: EngineEvent) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setMuted: (muted: boolean) => void;
@@ -58,6 +74,8 @@ const initialState = {
   avatarDirection: 'glassai' as AvatarDirection,
   previewDialogueState: null,
   textPromptEnabled: true,
+  pinRequired: null,
+  pinResult: null,
   lastError: null,
 };
 
@@ -77,6 +95,10 @@ export const useJarvisStore = create<JarvisState>()(
                     response: '',
                   }
                 : {}),
+              // pin_required only fires while genuinely PIN-pending; any other
+              // state (including a different reason to be back in 'confirming',
+              // e.g. slot-filling clarification) means it's stale.
+              ...(event.state !== 'confirming' ? { pinRequired: null } : {}),
             });
             break;
           case 'partial_transcript':
@@ -112,6 +134,33 @@ export const useJarvisStore = create<JarvisState>()(
             break;
           case 'config':
             set({ config: event.values });
+            break;
+          case 'pin_required':
+            set({
+              pinRequired: {
+                description: event.description,
+                attemptsRemaining: event.attempts_remaining,
+                expiresInSeconds: event.expires_in_seconds,
+                receivedAt: Date.now(),
+              },
+              pinResult: null,
+            });
+            break;
+          case 'pin_result':
+            set((state) => ({
+              pinResult: {
+                status: event.status,
+                message: event.message,
+                attemptsRemaining: event.attempts_remaining,
+                receivedAt: Date.now(),
+              },
+              // "wrong" keeps the modal open (with the decremented count) so the
+              // user can retry; every other outcome resolves the pending action.
+              pinRequired:
+                event.status === 'wrong' && state.pinRequired
+                  ? { ...state.pinRequired, attemptsRemaining: event.attempts_remaining }
+                  : null,
+            }));
             break;
         }
       },

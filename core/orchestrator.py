@@ -115,6 +115,7 @@ from ui.events import (
     EVENT_FINAL_TRANSCRIPT,
     EVENT_METRICS,
     EVENT_PARTIAL_TRANSCRIPT,
+    EVENT_PIN_REQUIRED,
     EVENT_RESPONSE,
     make_event,
 )
@@ -1062,6 +1063,17 @@ def _process_utterance(
                 # speak the PIN — the follow-up window (10s) is too short once
                 # TTS finishes saying "This needs your PIN to continue."
                 dialogue_manager.transition(DialogueState.CONFIRMING)
+                # Re-fires on every retry too (this branch is re-evaluated after
+                # each utterance), so a wrong voice-spoken attempt naturally
+                # refreshes the UI modal's attempts-remaining count.
+                ui_bridge.broadcast(
+                    make_event(
+                        EVENT_PIN_REQUIRED,
+                        description=confirmation_manager.pending_pin_description(),
+                        attempts_remaining=confirmation_manager.pin_attempts_remaining(),
+                        expires_in_seconds=confirmation_manager.pin_expires_in_seconds(),
+                    )
+                )
             else:
                 dialogue_manager.transition(DialogueState.FOLLOW_UP)
             notify_follow_up_wake()

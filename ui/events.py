@@ -15,6 +15,8 @@ EVENT_METRICS = "metrics"
 EVENT_HEALTH = "health"
 EVENT_ERROR = "error"
 EVENT_CONFIG = "config"
+EVENT_PIN_REQUIRED = "pin_required"
+EVENT_PIN_RESULT = "pin_result"
 
 # UI -> engine commands
 COMMAND_TEXT = "text_command"
@@ -23,6 +25,7 @@ COMMAND_SETTING_UPDATE = "setting_update"
 COMMAND_FEATURE_FLAG = "feature_flag"
 COMMAND_CONFIG_REQUEST = "config_request"
 COMMAND_HEALTH_REQUEST = "health_request"
+COMMAND_PIN_ATTEMPT = "pin_attempt"
 
 
 def make_event(event_type, **fields) -> dict:

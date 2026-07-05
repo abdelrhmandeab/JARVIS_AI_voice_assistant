@@ -6,6 +6,7 @@ import { useJarvisStore } from '../../stores/jarvisStore';
 import { openDashboard, showOverlay, hideOverlay, isTauri } from '../../lib/app';
 import { Avatar } from '../Avatar';
 import { Transcript } from '../Transcript';
+import { PinModal } from './PinModal';
 import { PromptInput } from './PromptInput';
 
 interface OverlayProps {
@@ -88,6 +89,7 @@ export function Overlay({ send }: OverlayProps) {
             <Avatar />
           </button>
           <Transcript />
+          <PinModal send={send} />
         </main>
 
         {textPromptEnabled ? (

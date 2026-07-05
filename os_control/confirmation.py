@@ -20,6 +20,7 @@ from os_control.second_factor import (
     is_confirmation_allowed,
     normalize_spoken_pin,
     record_confirmation_attempt,
+    second_factor_attempts_remaining,
     verify_second_factor,
 )
 
@@ -73,6 +74,21 @@ class ConfirmationManager:
         with _pin_lock:
             pending = _pin_pending_action
         return str((pending or {}).get("description") or "")
+
+    def pin_attempts_remaining(self):
+        """Second-factor attempts left before the pending PIN action locks out.
+
+        This is the binding limit in practice (SECOND_FACTOR_MAX_ATTEMPTS_PER_TOKEN
+        defaults lower than CONFIRMATION_MAX_ATTEMPTS_PER_TOKEN).
+        """
+        return second_factor_attempts_remaining(_PIN_PENDING_KEY)
+
+    def pin_expires_in_seconds(self):
+        with _pin_lock:
+            pending = _pin_pending_action
+        if not pending:
+            return 0
+        return max(0, int(pending["expires_at"] - time.time()))
 
     def discard_pending_pin_action(self):
         global _pin_pending_action

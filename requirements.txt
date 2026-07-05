@@ -73,8 +73,11 @@ comtypes>=1.4.8; platform_system == "Windows"
 pycaw>=20240210; platform_system == "Windows"
 wmi>=1.5.1; platform_system == "Windows"
 
-# Wi-Fi/Bluetooth/Airplane radio control via WinRT Radios API (no admin needed)
-winsdk>=1.0.0b10; platform_system == "Windows"
+# Wi-Fi/Bluetooth/Airplane radio control via WinRT Radios API (no admin needed).
+# winsdk has never published wheels past cp312 and fails to build from source;
+# skipped on 3.13+ so install doesn't break there. os_control/radio_ops.py
+# already falls back to the PowerShell backend when winsdk is unavailable.
+winsdk>=1.0.0b10; platform_system == "Windows" and python_version < "3.13"
 
 # Brightness control via DDC-CI (direct display protocol)
 screen-brightness-control>=0.23.0

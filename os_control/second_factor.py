@@ -89,6 +89,16 @@ def clear_second_factor_attempts(token):
         _ATTEMPTS.pop(key, None)
 
 
+def second_factor_attempts_remaining(token):
+    """Attempts left before the second-factor lockout trips for this token."""
+    key = _token_key(token)
+    max_attempts, _ = _attempt_limits()
+    with _LOCK:
+        state = _ATTEMPTS.get(key) or {}
+        failed_attempts = int(state.get("failed_attempts") or 0)
+    return max(0, max_attempts - failed_attempts)
+
+
 def clear_confirmation_attempts(token):
     key = _token_key(token)
     with _LOCK:

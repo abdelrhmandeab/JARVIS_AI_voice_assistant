@@ -46,8 +46,10 @@ const modelOptions: SelectOption[] = [
   { label: 'qwen3:8b', value: 'qwen3:8b' },
 ];
 
-const featureFlagLabels: Record<keyof FeatureFlags, string> = {
-  NUMERIC_PARSING_ENABLED: 'Numeric parsing',
+// NUMERIC_PARSING_ENABLED is intentionally omitted: the engine declares it in
+// FEATURE_FLAGS but nothing in core/nlp/os_control reads it, so a toggle for
+// it would be a dead control.
+const featureFlagLabels: Partial<Record<keyof FeatureFlags, string>> = {
   AUTO_APP_DISCOVERY_ENABLED: 'Auto app discovery',
   MEDIA_DIRECT_DISPATCH_ENABLED: 'Media direct dispatch',
   SYSTEM_VOLUME_CONTROL: 'System volume control',
@@ -144,7 +146,7 @@ export function Dashboard({ send }: DashboardProps) {
           <div data-tauri-drag-region>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-50/70">Control Center</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal text-white">
-              <span className="font-jarvis tracking-wide">Jarvis</span>
+              <span className="font-jarvis tracking-wide">JARVIS</span>
             </h1>
           </div>
 
@@ -224,10 +226,12 @@ export function Dashboard({ send }: DashboardProps) {
           </Section>
 
           <Section title="Feature Flags">
-            {(Object.keys(featureFlagLabels) as Array<keyof FeatureFlags>).map((flag) => (
+            {(
+              Object.entries(featureFlagLabels) as Array<[keyof FeatureFlags, string]>
+            ).map(([flag, label]) => (
               <Toggle
                 key={flag}
-                label={featureFlagLabels[flag]}
+                label={label}
                 checked={config?.feature_flags[flag] ?? false}
                 disabled={!hasConfig}
                 onChange={(enabled) => {
