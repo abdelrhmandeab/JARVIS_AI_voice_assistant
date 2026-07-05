@@ -8,8 +8,8 @@
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /* Self-hosted (OFL-licensed, see public/fonts/Audiowide-OFL.txt) stand-in for
-   Ethnocentric (commercial font, not bundled) — used only for the "Jarvis"
-   wordmark via the `font-jarvis` utility class below. */
+   Ethnocentric (commercial font, not bundled). Used app-wide as the default
+   typeface (via --font-sans below) and for the "Jarvis" wordmark. */
 @font-face {
   font-family: "Audiowide";
   src: url("/fonts/Audiowide-Regular.ttf") format("truetype");
@@ -20,6 +20,11 @@
 
 @theme {
   --font-jarvis: "Audiowide", sans-serif;
+  /* Make the Jarvis display font the application-wide default. Tailwind's
+     Preflight derives the base font-family from --font-sans, so every element
+     inherits Audiowide for Latin text; scripts it doesn't cover (e.g. Arabic)
+     fall back per-glyph to the system sans stack automatically. */
+  --font-sans: "Audiowide", ui-sans-serif, system-ui, sans-serif;
 }
 
 html,

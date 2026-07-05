@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import type { ConfigValues, DialogueState, EngineEvent, FeatureFlags, Language, PinResultStatus } from '../protocol';
 import type { ThemePreference } from '../lib/theme';
 
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 export type AvatarDirection = 'aurora' | 'glyph' | 'glassai' | 'companion';
 export type AppView = 'overlay' | 'dashboard';
 export type UiLanguage = Language | 'auto';
@@ -20,6 +20,36 @@ export interface PinResultState {
   message: string;
   attemptsRemaining: number;
   receivedAt: number;
+}
+
+export type NotificationTone = 'info' | 'error' | 'success';
+
+export interface AppNotification {
+  id: string;
+  message: string;
+  tone: NotificationTone;
+}
+
+let notificationCounter = 0;
+function makeNotificationId(): string {
+  notificationCounter += 1;
+  return `n${Date.now()}-${notificationCounter}`;
+}
+
+// Append a user-facing notification, skipping an identical back-to-back
+// duplicate and keeping only the most recent few so the banner can't grow
+// without bound.
+const MAX_NOTIFICATIONS = 5;
+function appendNotification(
+  list: AppNotification[],
+  message: string,
+  tone: NotificationTone,
+): AppNotification[] {
+  const text = message.trim();
+  if (!text) return list;
+  const last = list[list.length - 1];
+  if (last && last.message === text && last.tone === tone) return list;
+  return [...list, { id: makeNotificationId(), message: text, tone }].slice(-MAX_NOTIFICATIONS);
 }
 
 interface JarvisState {
@@ -41,9 +71,12 @@ interface JarvisState {
   previewDialogueState: DialogueState | null;
   textPromptEnabled: boolean;
   theme: ThemePreference;
+  notifications: AppNotification[];
   pinRequired: PinRequiredState | null;
   pinResult: PinResultState | null;
   dispatch: (event: EngineEvent) => void;
+  notify: (message: string, tone?: NotificationTone) => void;
+  dismissNotification: (id: string) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setMuted: (muted: boolean) => void;
   setAvatarDirection: (direction: AvatarDirection) => void;
@@ -74,10 +107,11 @@ const initialState = {
   responseLanguage: null,
   stages: [],
   doctor: null,
-  avatarDirection: 'glassai' as AvatarDirection,
+  avatarDirection: 'companion' as AvatarDirection,
   previewDialogueState: null,
   textPromptEnabled: true,
   theme: 'dark' as ThemePreference,
+  notifications: [] as AppNotification[],
   pinRequired: null,
   pinResult: null,
   lastError: null,
@@ -134,7 +168,10 @@ export const useJarvisStore = create<JarvisState>()(
             });
             break;
           case 'error':
-            set({ lastError: event.message });
+            set((state) => ({
+              lastError: event.message,
+              notifications: appendNotification(state.notifications, event.message, 'error'),
+            }));
             break;
           case 'config':
             set({ config: event.values });
@@ -175,6 +212,10 @@ export const useJarvisStore = create<JarvisState>()(
       setUiLanguage: (uiLanguage) => set({ uiLanguage }),
       setTextPromptEnabled: (textPromptEnabled) => set({ textPromptEnabled }),
       setTheme: (theme) => set({ theme }),
+      notify: (message, tone = 'info') =>
+        set((state) => ({ notifications: appendNotification(state.notifications, message, tone) })),
+      dismissNotification: (id) =>
+        set((state) => ({ notifications: state.notifications.filter((item) => item.id !== id) })),
       setFeatureFlagLocal: (flag, enabled) =>
         set((state) => {
           if (!state.config) {

@@ -72,6 +72,26 @@ describe('jarvisStore', () => {
     expect(useJarvisStore.getState().lastError).toBe('socket failed');
   });
 
+  it('pushes a notification for error events and can dismiss it', () => {
+    useJarvisStore.getState().dispatch({ type: 'error', message: 'socket failed' });
+
+    const [notification] = useJarvisStore.getState().notifications;
+    expect(notification).toMatchObject({ message: 'socket failed', tone: 'error' });
+
+    useJarvisStore.getState().dismissNotification(notification.id);
+    expect(useJarvisStore.getState().notifications).toHaveLength(0);
+  });
+
+  it('skips identical back-to-back notifications and caps the queue', () => {
+    const { notify } = useJarvisStore.getState();
+    notify('same', 'info');
+    notify('same', 'info');
+    expect(useJarvisStore.getState().notifications).toHaveLength(1);
+
+    for (let i = 0; i < 8; i += 1) notify(`msg ${i}`, 'info');
+    expect(useJarvisStore.getState().notifications.length).toBeLessThanOrEqual(5);
+  });
+
   it('handles config and optimistic dashboard state updates', () => {
     useJarvisStore.getState().dispatch({
       type: 'config',

@@ -1,9 +1,15 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { UICommand, FeatureFlags } from '../../protocol';
 import { backToOverlay, closeApp } from '../../lib/app';
 import { GradientBackground } from '../GradientBackground';
 import { PromptInput } from '../overlay/PromptInput';
-import { useJarvisStore, type AvatarDirection, type UiLanguage } from '../../stores/jarvisStore';
+import {
+  useJarvisStore,
+  type AvatarDirection,
+  type ConnectionStatus,
+  type NotificationTone,
+  type UiLanguage,
+} from '../../stores/jarvisStore';
 import type { ThemePreference } from '../../lib/theme';
 import { Chip, PanelLabel } from '../ui/Chip';
 import { Select, type SelectOption } from './Select';
@@ -19,10 +25,12 @@ type DashboardOption<T extends string> = {
 };
 
 const avatarOptions: Array<DashboardOption<AvatarDirection>> = [
+  // "Jarvis" is the Companion avatar (the default); value stays 'companion' so
+  // existing persisted selections keep working.
+  { label: 'Jarvis', value: 'companion' },
   { label: 'Aurora', value: 'aurora' },
   { label: 'Glyph', value: 'glyph' },
   { label: 'Glass AI', value: 'glassai' },
-  { label: 'Companion', value: 'companion' },
 ];
 
 const languageOptions: Array<DashboardOption<UiLanguage>> = [
@@ -53,13 +61,43 @@ const modelOptions: SelectOption[] = [
   { label: 'qwen3:8b', value: 'qwen3:8b' },
 ];
 
-// NUMERIC_PARSING_ENABLED is intentionally omitted: the engine declares it in
-// FEATURE_FLAGS but nothing in core/nlp/os_control reads it, so a toggle for
-// it would be a dead control.
-const featureFlagLabels: Partial<Record<keyof FeatureFlags, string>> = {
-  AUTO_APP_DISCOVERY_ENABLED: 'Auto app discovery',
-  MEDIA_DIRECT_DISPATCH_ENABLED: 'Media direct dispatch',
-  SYSTEM_VOLUME_CONTROL: 'System volume control',
+// Only the flags the engine actually reads are exposed (NUMERIC_PARSING_ENABLED
+// is declared but never consumed, so it stays out of the UI). Each description
+// reflects what toggling the flag does in os_control.
+const featureFlags: Array<{ flag: keyof FeatureFlags; label: string; description: string }> = [
+  {
+    flag: 'AUTO_APP_DISCOVERY_ENABLED',
+    label: 'Auto app discovery',
+    description:
+      'Scans your installed applications so Jarvis can find and open them by name. When off, only apps in the built-in catalog can be launched.',
+  },
+  {
+    flag: 'MEDIA_DIRECT_DISPATCH_ENABLED',
+    label: 'Media direct dispatch',
+    description:
+      'Sends play/pause, next, and previous straight to the OS as native media keys for instant control. When off, those media commands are skipped.',
+  },
+  {
+    flag: 'SYSTEM_VOLUME_CONTROL',
+    label: 'System volume control',
+    description:
+      'Lets Jarvis raise, lower, mute, and set your system volume by voice. When off, volume commands are ignored.',
+  },
+];
+
+// Tone → banner styles for the dismissible notification area.
+const NOTICE_TONES: Record<NotificationTone, string> = {
+  info: 'border-cyan-500/25 bg-cyan-400/10 text-cyan-800 dark:border-cyan-200/20 dark:bg-cyan-200/10 dark:text-cyan-50/85',
+  error: 'border-red-500/30 bg-red-400/12 text-red-700 dark:border-red-300/25 dark:bg-red-400/12 dark:text-red-100',
+  success:
+    'border-emerald-500/30 bg-emerald-400/12 text-emerald-700 dark:border-emerald-300/25 dark:bg-emerald-400/12 dark:text-emerald-100',
+};
+
+// Connection state → user-facing online/offline presentation.
+const CONNECTION_META: Record<ConnectionStatus, { label: string; dot: string; text: string }> = {
+  connected: { label: 'Online', dot: 'bg-emerald-500', text: 'text-emerald-700 dark:text-emerald-300' },
+  connecting: { label: 'Connecting', dot: 'bg-amber-500', text: 'text-amber-700 dark:text-amber-300' },
+  disconnected: { label: 'Offline', dot: 'bg-red-500', text: 'text-red-600 dark:text-red-300' },
 };
 
 function ChipGroup<T extends string>({
@@ -106,6 +144,34 @@ function Section({
   );
 }
 
+// A single dismissible notification row with a small close button.
+function Notice({
+  tone,
+  onDismiss,
+  children,
+}: {
+  tone: NotificationTone;
+  onDismiss: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`flex items-start gap-3 rounded-md border p-3 text-[12px] ${NOTICE_TONES[tone]}`}>
+      <span className="min-w-0 flex-1 break-words">{children}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss notification"
+        title="Dismiss"
+        className="grid h-5 w-5 shrink-0 place-items-center rounded opacity-70 transition-opacity hover:opacity-100"
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 export function Dashboard({ send }: DashboardProps) {
   const config = useJarvisStore((state) => state.config);
   const avatarDirection = useJarvisStore((state) => state.avatarDirection);
@@ -114,6 +180,7 @@ export function Dashboard({ send }: DashboardProps) {
   const textPromptEnabled = useJarvisStore((state) => state.textPromptEnabled);
   const theme = useJarvisStore((state) => state.theme);
   const connectionStatus = useJarvisStore((state) => state.connectionStatus);
+  const notifications = useJarvisStore((state) => state.notifications);
   const setAvatarDirection = useJarvisStore((state) => state.setAvatarDirection);
   const setUiLanguage = useJarvisStore((state) => state.setUiLanguage);
   const setMuted = useJarvisStore((state) => state.setMuted);
@@ -121,8 +188,22 @@ export function Dashboard({ send }: DashboardProps) {
   const setTheme = useJarvisStore((state) => state.setTheme);
   const setFeatureFlagLocal = useJarvisStore((state) => state.setFeatureFlagLocal);
   const setConfigValueLocal = useJarvisStore((state) => state.setConfigValueLocal);
+  const dismissNotification = useJarvisStore((state) => state.dismissNotification);
 
   const hasConfig = config !== null;
+
+  // Locally dismissible "config not arrived" hint, shown as a notification.
+  const [configHintDismissed, setConfigHintDismissed] = useState(false);
+
+  // Mock-only model picker: lets the user browse the available models without
+  // reconfiguring the engine (no setting_update is sent). It tracks the engine's
+  // reported model so it stays believable, but changing it is purely cosmetic.
+  const [previewModel, setPreviewModel] = useState<string>(config?.model ?? 'auto');
+  useEffect(() => {
+    if (config?.model) setPreviewModel(config.model);
+  }, [config?.model]);
+
+  const connection = CONNECTION_META[connectionStatus];
 
   const handleLanguageChange = (language: UiLanguage) => {
     setUiLanguage(language);
@@ -193,9 +274,18 @@ export function Dashboard({ send }: DashboardProps) {
           </div>
         </header>
 
-        {!hasConfig ? (
-          <div className="rounded-md border border-cyan-500/25 bg-cyan-400/10 p-3 text-[12px] text-cyan-800 dark:border-cyan-200/20 dark:bg-cyan-200/10 dark:text-cyan-50/80">
-            Engine config has not arrived yet. Use Refresh to request the current values from the bridge.
+        {notifications.length > 0 || (!hasConfig && !configHintDismissed) ? (
+          <div className="grid gap-2">
+            {!hasConfig && !configHintDismissed ? (
+              <Notice tone="info" onDismiss={() => setConfigHintDismissed(true)}>
+                Engine config has not arrived yet. Use Refresh to request the current values from the bridge.
+              </Notice>
+            ) : null}
+            {notifications.map((item) => (
+              <Notice key={item.id} tone={item.tone} onDismiss={() => dismissNotification(item.id)}>
+                {item.message}
+              </Notice>
+            ))}
           </div>
         ) : null}
 
@@ -234,32 +324,26 @@ export function Dashboard({ send }: DashboardProps) {
           </Section>
 
           <Section title="Model">
-            <Select
-              label="LLM model"
-              value={config?.model ?? 'auto'}
-              options={modelOptions}
-              disabled={!hasConfig}
-              onChange={(model) => {
-                setConfigValueLocal('model', model);
-                send({ type: 'setting_update', key: 'JARVIS_LLM_MODEL', value: model });
-              }}
-            />
+            <Select label="LLM model" value={previewModel} options={modelOptions} onChange={setPreviewModel} />
+            <p className="text-[11px] text-slate-500 dark:text-white/45">
+              Preview only — selecting a model here doesn't change the running engine yet.
+            </p>
           </Section>
 
           <Section title="Feature Flags">
-            {(
-              Object.entries(featureFlagLabels) as Array<[keyof FeatureFlags, string]>
-            ).map(([flag, label]) => (
-              <Toggle
-                key={flag}
-                label={label}
-                checked={config?.feature_flags[flag] ?? false}
-                disabled={!hasConfig}
-                onChange={(enabled) => {
-                  setFeatureFlagLocal(flag, enabled);
-                  send({ type: 'feature_flag', flag, enabled });
-                }}
-              />
+            {featureFlags.map(({ flag, label, description }) => (
+              <div key={flag} className="grid gap-1.5">
+                <Toggle
+                  label={label}
+                  checked={config?.feature_flags[flag] ?? false}
+                  disabled={!hasConfig}
+                  onChange={(enabled) => {
+                    setFeatureFlagLocal(flag, enabled);
+                    send({ type: 'feature_flag', flag, enabled });
+                  }}
+                />
+                <p className="px-1 text-[11px] leading-relaxed text-slate-500 dark:text-white/45">{description}</p>
+              </div>
             ))}
           </Section>
 
@@ -271,8 +355,11 @@ export function Dashboard({ send }: DashboardProps) {
             <dl className="grid gap-3 text-sm">
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-slate-500 dark:text-white/58">Connection</dt>
-                <dd className="rounded border border-black/10 bg-black/[0.04] px-2 py-1 font-medium capitalize text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-white/80">
-                  {connectionStatus}
+                <dd
+                  className={`flex items-center gap-2 rounded border border-black/10 bg-black/[0.04] px-2 py-1 font-medium dark:border-white/10 dark:bg-white/5 ${connection.text}`}
+                >
+                  <span className={`h-2 w-2 rounded-full ${connection.dot}`} aria-hidden="true" />
+                  {connection.label}
                 </dd>
               </div>
               <div className="flex items-center justify-between gap-4">
