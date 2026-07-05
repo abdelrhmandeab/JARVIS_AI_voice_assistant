@@ -45,7 +45,10 @@ const themeOptions: Array<DashboardOption<ThemePreference>> = [
   { label: 'Auto', value: 'auto' },
 ];
 
+// Mirrors core.persona.PERSONA_PROFILES exactly so every engine persona is
+// selectable and config.persona always matches an option.
 const personaOptions: SelectOption[] = [
+  { label: 'Assistant', value: 'assistant' },
   { label: 'Friendly', value: 'friendly' },
   { label: 'Formal', value: 'formal' },
   { label: 'Casual', value: 'casual' },
