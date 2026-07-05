@@ -15,7 +15,7 @@ export function Toggle({ label, checked, onChange, disabled = false }: TogglePro
       onClick={() => onChange(!checked)}
       className="flex min-h-11 w-full items-center justify-between gap-4 rounded border border-black/10 bg-black/[0.03] px-3 py-2 text-left transition hover:bg-black/[0.05] disabled:cursor-not-allowed disabled:opacity-45 dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
     >
-      <span className="text-sm font-medium text-slate-700 dark:text-white/82">{label}</span>
+      <span className="text-sm font-semibold text-slate-700 dark:text-white/82">{label}</span>
       <span
         className={`relative h-6 w-11 shrink-0 rounded-full border transition ${
           checked

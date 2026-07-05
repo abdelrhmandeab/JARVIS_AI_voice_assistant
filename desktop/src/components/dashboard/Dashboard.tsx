@@ -230,7 +230,10 @@ export function Dashboard({ send }: DashboardProps) {
           />
         </div>
       </div>
-      <div className="relative z-10 mx-auto grid w-full max-w-5xl gap-5 p-4 text-sm sm:p-5">
+      {/* Body content defaults to semibold; headline elements (h1, the eyebrow,
+          and each Section's PanelLabel) already set their own font-semibold, so
+          they're unaffected. */}
+      <div className="relative z-10 mx-auto grid w-full max-w-5xl gap-5 p-4 text-sm font-semibold sm:p-5">
         {/* Frameless window: this header doubles as the drag handle. */}
         <header
           data-tauri-drag-region
@@ -246,7 +249,7 @@ export function Dashboard({ send }: DashboardProps) {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Chip onClick={() => send({ type: 'config_request' })} className="h-9 px-3 text-sm font-medium">
+            <Chip onClick={() => send({ type: 'config_request' })} className="h-9 px-3 text-sm font-semibold">
               Refresh
             </Chip>
             <Chip
@@ -254,7 +257,7 @@ export function Dashboard({ send }: DashboardProps) {
               onClick={() => {
                 void backToOverlay();
               }}
-              className="h-9 px-3 text-sm font-medium"
+              className="h-9 px-3 text-sm font-semibold"
             >
               Hide
             </Chip>
@@ -356,7 +359,7 @@ export function Dashboard({ send }: DashboardProps) {
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-slate-500 dark:text-white/58">Connection</dt>
                 <dd
-                  className={`flex items-center gap-2 rounded border border-black/10 bg-black/[0.04] px-2 py-1 font-medium dark:border-white/10 dark:bg-white/5 ${connection.text}`}
+                  className={`flex items-center gap-2 rounded border border-black/10 bg-black/[0.04] px-2 py-1 font-semibold dark:border-white/10 dark:bg-white/5 ${connection.text}`}
                 >
                   <span className={`h-2 w-2 rounded-full ${connection.dot}`} aria-hidden="true" />
                   {connection.label}
@@ -364,7 +367,7 @@ export function Dashboard({ send }: DashboardProps) {
               </div>
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-slate-500 dark:text-white/58">Current model</dt>
-                <dd className="rounded border border-black/10 bg-black/[0.04] px-2 py-1 font-medium text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-white/80">
+                <dd className="rounded border border-black/10 bg-black/[0.04] px-2 py-1 font-semibold text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-white/80">
                   {config?.model ?? 'Unknown'}
                 </dd>
               </div>

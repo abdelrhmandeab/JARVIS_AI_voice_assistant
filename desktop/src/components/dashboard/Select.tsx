@@ -14,7 +14,7 @@ interface SelectProps {
 export function Select({ label, value, options, onChange, disabled = false }: SelectProps) {
   return (
     <label className="grid gap-2 text-sm">
-      <span className="font-medium text-slate-600 dark:text-white/72">{label}</span>
+      <span className="font-semibold text-slate-600 dark:text-white/72">{label}</span>
       <select
         value={value}
         disabled={disabled}
