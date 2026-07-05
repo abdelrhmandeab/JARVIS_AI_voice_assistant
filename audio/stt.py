@@ -34,6 +34,8 @@ from core.config import (
     STT_FORBID_OTHER_LANGUAGES,
     STT_LANGUAGE_HINT,
     STT_LANGUAGE_LOCK,
+    STT_LOCAL_RACE_ENABLED,
+    STT_LOCAL_RACE_MIN_ADVANTAGE,
     STT_MAX_AUDIO_SECONDS,
     STT_MIN_AUDIO_RMS,
     STT_MIN_CONFIDENCE,
@@ -376,6 +378,34 @@ def _below_confidence_floor(text: str, confidence: Optional[float]) -> bool:
     if word_count > int(STT_MIN_CONFIDENCE_SHORT_WORDS):
         return False
     return float(confidence) < float(STT_MIN_CONFIDENCE)
+
+
+def _score_transcript_routability(text: str, language: str) -> float:
+    """Dry-run score for how confidently `text` routes to a real command.
+
+    Same-script, same-language word-substitution errors (e.g. Arabic "دور"
+    misheard as Arabic "ضغط") pass script/language validation cleanly but
+    parse to a different, wrong intent — this catches that class of error by
+    parsing (never executing) both STT candidates and preferring whichever
+    one the router finds more confidently actionable. LLM_QUERY / ambiguous
+    parses score low since they carry no real command-routing signal.
+    """
+    normalized = str(text or "").strip()
+    if not normalized:
+        return 0.0
+    try:
+        from core.command_parser import parse_command
+        from core.intent_confidence import assess_intent_confidence
+
+        parsed = parse_command(normalized)
+        if str(getattr(parsed, "intent", "") or "").strip().upper() == "LLM_QUERY":
+            return 0.0
+        assessment = assess_intent_confidence(normalized, parsed, language=language or "ar")
+        if bool(getattr(assessment, "should_clarify", False)):
+            return 0.0
+        return float(getattr(assessment, "confidence", 0.0) or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _finalize_stt_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -1148,6 +1178,45 @@ def _transcribe_with_hybrid_elevenlabs(
     # transcript in favour of forced-lock local Whisper (which hallucinates).
     best_cloud_mixed: Optional[Dict[str, Any]] = None
 
+    # Kick off local Whisper (Egyptian-colloquial-biased prompt) concurrently
+    # with the cloud call so a same-language, same-script word-substitution
+    # error from ElevenLabs (e.g. "دور" misheard as "ضغط") can be caught by
+    # comparing routability rather than only language/script validation.
+    local_race_future = None
+    local_race_executor = None
+    if (
+        bool(STT_LOCAL_RACE_ENABLED)
+        and bool(STT_ELEVENLABS_ENABLED)
+        and cloud_allowed
+        and cloud_lang in {"ar", "en"}
+    ):
+        local_race_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-local-race")
+        local_race_future = local_race_executor.submit(
+            _transcribe_with_faster_whisper,
+            audio_file,
+            language_hint=language_hint,
+            locked_lang=local_lang,
+        )
+
+    _local_race_resolved = False
+    _local_race_result: Optional[Dict[str, Any]] = None
+
+    def _resolve_local_race() -> Optional[Dict[str, Any]]:
+        nonlocal _local_race_resolved, _local_race_result
+        if _local_race_resolved:
+            return _local_race_result
+        _local_race_resolved = True
+        if local_race_future is None:
+            return None
+        try:
+            _local_race_result = local_race_future.result(timeout=max(0.1, float(STT_MAX_AUDIO_SECONDS)))
+        except Exception:
+            _local_race_result = None
+        finally:
+            if local_race_executor is not None:
+                local_race_executor.shutdown(wait=False)
+        return _local_race_result
+
     if bool(STT_ELEVENLABS_ENABLED) and cloud_allowed:
         try:
             if cloud_lang == "ambiguous" and bool(STT_CLOUD_RACE_LANGUAGES):
@@ -1168,6 +1237,30 @@ def _transcribe_with_hybrid_elevenlabs(
                     method=_ELEVENLABS_METHOD,
                 )
                 if validated is not None:
+                    local_candidate = _resolve_local_race()
+                    local_validated = (
+                        _validated_backend_result(
+                            local_candidate,
+                            locked_lang=local_lang,
+                            backend=_HYBRID_BACKEND,
+                            method=_LOCAL_BACKEND,
+                        )
+                        if local_candidate is not None
+                        else None
+                    )
+                    if local_validated is not None:
+                        cloud_text = str(validated.get("text", "") or "").strip()
+                        local_text = str(local_validated.get("text", "") or "").strip()
+                        if local_text and local_text != cloud_text:
+                            cloud_score = _score_transcript_routability(cloud_text, cloud_lang)
+                            local_score = _score_transcript_routability(local_text, local_lang)
+                            if local_score - cloud_score >= float(STT_LOCAL_RACE_MIN_ADVANTAGE):
+                                logger.info(
+                                    "stt_local_race_preferred cloud=%.2f local=%.2f cloud_text=%r local_text=%r",
+                                    cloud_score, local_score, cloud_text, local_text,
+                                )
+                                local_validated["local_race_preferred"] = True
+                                return local_validated
                     return validated
                 errors.append("elevenlabs:invalid_language")
                 primary_text = str(primary.get("text", "") or "").strip()
@@ -1224,12 +1317,14 @@ def _transcribe_with_hybrid_elevenlabs(
             float(STT_MAX_AUDIO_SECONDS),
         )
 
-    local = _transcribe_with_faster_whisper(
-        audio_file,
-        language_hint=language_hint,
-        on_partial=on_partial,
-        locked_lang=local_lang,
-    )
+    local = _resolve_local_race()
+    if local is None:
+        local = _transcribe_with_faster_whisper(
+            audio_file,
+            language_hint=language_hint,
+            on_partial=on_partial,
+            locked_lang=local_lang,
+        )
     if "stt:silence" in list(local.get("errors") or []):
         local["backend"] = _HYBRID_BACKEND
         local["method"] = _LOCAL_BACKEND

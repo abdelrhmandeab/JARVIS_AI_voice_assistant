@@ -74,7 +74,6 @@ from core.config import (
     MAX_RECORD_DURATION,
     PREWARM_LLM_BLOCKING,
     PREWARM_SEMANTIC_ROUTER_BLOCKING,
-    REALTIME_BACKPRESSURE_POLL_SECONDS,
     REALTIME_DROP_WHEN_BUSY,
     REALTIME_MAX_PENDING_UTTERANCES,
     SPEECH_GUARD_SKIP_NON_RESPONSIVE_PROFILES,
@@ -1824,11 +1823,15 @@ def run():
                 next_doctor_run_at = time.time() + doctor_interval_seconds
 
             in_flight = _prune_futures(in_flight)
-            busy = len(in_flight) >= max(1, int(REALTIME_MAX_PENDING_UTTERANCES))
-            if busy and REALTIME_DROP_WHEN_BUSY:
-                time.sleep(float(REALTIME_BACKPRESSURE_POLL_SECONDS))
-                metrics.record_stage("backpressure_wait", float(REALTIME_BACKPRESSURE_POLL_SECONDS), success=True)
-                continue
+            # Deliberately NOT gating listen_for_wake_word() on backpressure here.
+            # _process_utterance (routing/execution/LLM) runs on the executor and
+            # doesn't hold the mic, so the wake-word listener must keep running
+            # concurrently with it — otherwise barge-in during ROUTING/THINKING/
+            # SPEAKING never gets a chance to fire (the mic simply isn't
+            # listening). The busy check below (after wake detection) still
+            # prevents starting a *second* recording+processing cycle while one
+            # is in flight; it only used to also block listening itself, which
+            # was the actual bug.
             if ui_bridge.muted:
                 time.sleep(0.2)
                 continue

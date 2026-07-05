@@ -421,7 +421,7 @@ def listen_for_wake_word():
 
             from core.runtime_coordinator import RuntimePhase, coordinator
             phase = coordinator.current_phase
-            if phase in (RuntimePhase.THINKING, RuntimePhase.SPEAKING):
+            if phase in (RuntimePhase.ROUTING, RuntimePhase.THINKING, RuntimePhase.SPEAKING):
                 coordinator.request_interrupt()
                 log.info("Wake interrupt fired (was %s, score=%.3f).", phase.value, score)
                 return "wake"

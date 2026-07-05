@@ -91,8 +91,16 @@ VAD_COMMAND_SILENCE_SECONDS = _env_float("JARVIS_VAD_COMMAND_SILENCE_SECONDS", 0
 VAD_CHAT_SILENCE_SECONDS = _env_float("JARVIS_VAD_CHAT_SILENCE_SECONDS", 1.50)
 VAD_SILENCE_SECONDS = _env_float("JARVIS_VAD_SILENCE_SECONDS", VAD_COMMAND_SILENCE_SECONDS)
 VAD_MIN_SPEECH_SECONDS = _env_float("JARVIS_VAD_MIN_SPEECH_SECONDS", 0.30)
-VAD_PREROLL_SECONDS = 0.2
+VAD_PREROLL_SECONDS = _env_float("JARVIS_VAD_PREROLL_SECONDS", 0.5)
 VAD_START_TIMEOUT_SECONDS = _env_float("JARVIS_VAD_START_TIMEOUT_SECONDS", 3.2)
+# Peak-normalize recorded command audio before it's sent to STT (local or
+# cloud) — quiet/soft speech otherwise reaches the ASR under-amplified.
+# Target is a fraction of full int16 scale, headroom keeps normalization from
+# amplifying noise floor on already-loud recordings.
+STT_AUDIO_NORMALIZE_ENABLED = _env_bool("JARVIS_STT_AUDIO_NORMALIZE_ENABLED", True)
+STT_AUDIO_NORMALIZE_TARGET_PEAK = max(
+    0.1, min(0.98, _env_float("JARVIS_STT_AUDIO_NORMALIZE_TARGET_PEAK", 0.9))
+)
 REALTIME_MAX_PENDING_UTTERANCES = 1
 REALTIME_DROP_WHEN_BUSY = True
 REALTIME_BACKPRESSURE_POLL_SECONDS = 0.25
@@ -150,7 +158,7 @@ WAKE_WORD_DETECTION_COOLDOWN_SECONDS = max(
 # settle, so it isn't captured as the start of the command recording.
 WAKE_WORD_RECORD_START_DELAY_MS = max(
     0,
-    _env_int("JARVIS_WAKE_WORD_RECORD_START_DELAY_MS", 150),
+    _env_int("JARVIS_WAKE_WORD_RECORD_START_DELAY_MS", 60),
 )
 # Adaptive wake-word retraining: accumulate confirmed detections and
 # periodically retrain the ONNX model in the background.
@@ -250,6 +258,17 @@ STT_ELEVENLABS_COOLDOWN_SECONDS = max(60, _env_int("JARVIS_STT_ELEVENLABS_COOLDO
 STT_MAX_AUDIO_SECONDS = max(3, _env_int("JARVIS_STT_MAX_AUDIO_SECONDS", 12))
 STT_CLOUD_RACE_LANGUAGES = _env_bool("JARVIS_STT_CLOUD_RACE_LANGUAGES", False)
 STT_ELEVENLABS_WEAK_TEXT_MIN_CHARS = max(2, _env_int("JARVIS_STT_ELEVENLABS_WEAK_TEXT_MIN_CHARS", 5))
+# Run local Whisper concurrently with the ElevenLabs cloud call (rather than
+# only as a fallback when cloud validation fails), and prefer whichever
+# transcript scores as more confidently routable against known command
+# vocabulary. Targets same-language, same-script word-substitution errors
+# (e.g. "دور" heard as "ضغط") that pure language/script validation can't catch.
+STT_LOCAL_RACE_ENABLED = _env_bool("JARVIS_STT_LOCAL_RACE_ENABLED", True)
+# Local must beat cloud's routability score by at least this much to be
+# preferred — ties/near-ties keep the generally stronger cloud result.
+STT_LOCAL_RACE_MIN_ADVANTAGE = max(
+    0.0, _env_float("JARVIS_STT_LOCAL_RACE_MIN_ADVANTAGE", 0.15)
+)
 
 # Local fallback backend settings.
 WHISPER_MODEL = _env("JARVIS_WHISPER_MODEL", "auto").strip() or "auto"

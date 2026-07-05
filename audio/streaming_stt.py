@@ -33,6 +33,8 @@ from core.config import (
     AUDIO_CHUNK_SIZE,
     MAX_RECORD_DURATION,
     SAMPLE_RATE,
+    STT_AUDIO_NORMALIZE_ENABLED,
+    STT_AUDIO_NORMALIZE_TARGET_PEAK,
     STT_PARTIAL_MIN_SECONDS,
     STT_PARTIAL_INTERVAL_SECONDS,
     STT_PARTIAL_WINDOW_SECONDS,
@@ -81,6 +83,28 @@ def _seconds_to_chunks(seconds: float) -> int:
 def _chunk_rms(chunk: np.ndarray) -> float:
     normalized = chunk.astype(np.float32) / 32768.0
     return float(np.sqrt(np.mean(np.square(normalized))))
+
+
+def _normalize_audio_peak(audio_int16: np.ndarray) -> np.ndarray:
+    """Peak-normalize int16 audio toward STT_AUDIO_NORMALIZE_TARGET_PEAK.
+
+    Quiet/soft speech (fast, low-energy Egyptian colloquial phrasing) reaches
+    STT under-amplified relative to the noise floor, which measurably hurts
+    recognition. Only scales up (never down) so already-loud recordings are
+    left untouched rather than having their dynamic range compressed.
+    """
+    if not bool(STT_AUDIO_NORMALIZE_ENABLED) or audio_int16.size == 0:
+        return audio_int16
+    peak = int(np.abs(audio_int16).max())
+    if peak <= 0:
+        return audio_int16
+    target = float(STT_AUDIO_NORMALIZE_TARGET_PEAK) * 32767.0
+    gain = target / float(peak)
+    if gain <= 1.0:
+        return audio_int16
+    scaled = audio_int16.astype(np.float32) * gain
+    np.clip(scaled, -32768.0, 32767.0, out=scaled)
+    return scaled.astype(np.int16)
 
 
 def _write_wav_file(filename: str, sample_rate: int, audio_int16: np.ndarray) -> None:
@@ -167,6 +191,7 @@ def _transcribe_buffer(
         }
 
     audio = np.concatenate(chunks, axis=0).astype(np.int16, copy=False)
+    audio = _normalize_audio_peak(audio)
     _write_wav_file(filename, SAMPLE_RATE, audio)
 
     # Use Arabic-optimised whisper params only when explicitly in Arabic mode.
@@ -268,7 +293,10 @@ class StreamingSTT:
                 suffix=".wav",
             ) as partial_tmp:
                 partial_path = partial_tmp.name
-            _write_wav_file(partial_path, SAMPLE_RATE, np.concatenate(chunks_snapshot, axis=0).astype(np.int16, copy=False))
+            partial_audio = _normalize_audio_peak(
+                np.concatenate(chunks_snapshot, axis=0).astype(np.int16, copy=False)
+            )
+            _write_wav_file(partial_path, SAMPLE_RATE, partial_audio)
             result = transcribe_partial_with_meta(
                 partial_path,
                 language_hint=self.language_hint,
