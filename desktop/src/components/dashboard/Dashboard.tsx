@@ -9,6 +9,7 @@ import {
   type ConnectionStatus,
   type NotificationTone,
   type UiLanguage,
+  type VoiceGender,
 } from '../../stores/jarvisStore';
 import type { ThemePreference } from '../../lib/theme';
 import { Chip, PanelLabel } from '../ui/Chip';
@@ -43,6 +44,11 @@ const themeOptions: Array<DashboardOption<ThemePreference>> = [
   { label: 'Dark', value: 'dark' },
   { label: 'Light', value: 'light' },
   { label: 'Auto', value: 'auto' },
+];
+
+const voiceOptions: Array<DashboardOption<VoiceGender>> = [
+  { label: 'Male', value: 'male' },
+  { label: 'Female', value: 'female' },
 ];
 
 // Mirrors core.persona.PERSONA_PROFILES exactly so every engine persona is
@@ -182,6 +188,7 @@ export function Dashboard({ send }: DashboardProps) {
   const muted = useJarvisStore((state) => state.muted);
   const textPromptEnabled = useJarvisStore((state) => state.textPromptEnabled);
   const theme = useJarvisStore((state) => state.theme);
+  const voiceGender = useJarvisStore((state) => state.voiceGender);
   const connectionStatus = useJarvisStore((state) => state.connectionStatus);
   const notifications = useJarvisStore((state) => state.notifications);
   const setAvatarDirection = useJarvisStore((state) => state.setAvatarDirection);
@@ -189,6 +196,7 @@ export function Dashboard({ send }: DashboardProps) {
   const setMuted = useJarvisStore((state) => state.setMuted);
   const setTextPromptEnabled = useJarvisStore((state) => state.setTextPromptEnabled);
   const setTheme = useJarvisStore((state) => state.setTheme);
+  const setVoiceGender = useJarvisStore((state) => state.setVoiceGender);
   const setFeatureFlagLocal = useJarvisStore((state) => state.setFeatureFlagLocal);
   const setConfigValueLocal = useJarvisStore((state) => state.setConfigValueLocal);
   const dismissNotification = useJarvisStore((state) => state.dismissNotification);
@@ -243,7 +251,7 @@ export function Dashboard({ send }: DashboardProps) {
           className="flex flex-col gap-3 border-b border-black/10 pb-4 dark:border-white/10 sm:flex-row sm:items-center sm:justify-between"
         >
           <div data-tauri-drag-region>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700/80 dark:text-cyan-50/70">
+            <p className="font-jarvis text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700/80 dark:text-cyan-50/70">
               Control Center
             </p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal text-slate-900 dark:text-white">
@@ -316,6 +324,15 @@ export function Dashboard({ send }: DashboardProps) {
                 send({ type: 'setting_update', key: 'JARVIS_PERSONA', value: persona });
               }}
             />
+            <div className="grid gap-2">
+              <span className="font-semibold text-slate-600 dark:text-white/72">Voice</span>
+              {/* UI-only for now: remembers the preference; the engine will consume
+                  it once TTS voice selection is implemented. */}
+              <ChipGroup value={voiceGender} options={voiceOptions} onChange={setVoiceGender} />
+              <p className="text-[11px] font-normal text-slate-500 dark:text-white/45">
+                Male/female voice — engine support coming soon.
+              </p>
+            </div>
           </Section>
 
           <Section title="Language">

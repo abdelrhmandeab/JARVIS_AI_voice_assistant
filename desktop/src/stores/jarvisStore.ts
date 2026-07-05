@@ -7,6 +7,7 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 export type AvatarDirection = 'aurora' | 'glyph' | 'glassai' | 'companion';
 export type AppView = 'overlay' | 'dashboard';
 export type UiLanguage = Language | 'auto';
+export type VoiceGender = 'male' | 'female';
 
 export interface PinRequiredState {
   description: string;
@@ -71,6 +72,7 @@ interface JarvisState {
   previewDialogueState: DialogueState | null;
   textPromptEnabled: boolean;
   theme: ThemePreference;
+  voiceGender: VoiceGender;
   notifications: AppNotification[];
   pinRequired: PinRequiredState | null;
   pinResult: PinResultState | null;
@@ -84,6 +86,7 @@ interface JarvisState {
   setUiLanguage: (language: UiLanguage) => void;
   setTextPromptEnabled: (enabled: boolean) => void;
   setTheme: (theme: ThemePreference) => void;
+  setVoiceGender: (voice: VoiceGender) => void;
   setFeatureFlagLocal: (flag: keyof FeatureFlags, enabled: boolean) => void;
   setConfigValueLocal: <K extends keyof ConfigValues>(key: K, value: ConfigValues[K]) => void;
   previewState: (state: DialogueState | null) => void;
@@ -111,6 +114,8 @@ const initialState = {
   previewDialogueState: null,
   textPromptEnabled: true,
   theme: 'dark' as ThemePreference,
+  // Jarvis is canonically a male voice; engine wiring lands later.
+  voiceGender: 'male' as VoiceGender,
   notifications: [] as AppNotification[],
   pinRequired: null,
   pinResult: null,
@@ -212,6 +217,7 @@ export const useJarvisStore = create<JarvisState>()(
       setUiLanguage: (uiLanguage) => set({ uiLanguage }),
       setTextPromptEnabled: (textPromptEnabled) => set({ textPromptEnabled }),
       setTheme: (theme) => set({ theme }),
+      setVoiceGender: (voiceGender) => set({ voiceGender }),
       notify: (message, tone = 'info') =>
         set((state) => ({ notifications: appendNotification(state.notifications, message, tone) })),
       dismissNotification: (id) =>
@@ -258,6 +264,7 @@ export const useJarvisStore = create<JarvisState>()(
         textPromptEnabled: state.textPromptEnabled,
         muted: state.muted,
         theme: state.theme,
+        voiceGender: state.voiceGender,
       }),
     },
   ),

@@ -23,7 +23,9 @@ export function FloatingPanel({
 
 /** Small uppercase-ish section label used inside a FloatingPanel. */
 export function PanelLabel({ children }: { children: ReactNode }) {
-  return <div className="mb-2 text-xs font-semibold text-slate-600 dark:text-white/80">{children}</div>;
+  return (
+    <div className="mb-2 font-jarvis text-xs font-semibold text-slate-600 dark:text-white/80">{children}</div>
+  );
 }
 
 /**

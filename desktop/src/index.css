@@ -8,8 +8,8 @@
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /* Self-hosted (OFL-licensed, see public/fonts/Audiowide-OFL.txt) stand-in for
-   Ethnocentric (commercial font, not bundled). Used app-wide as the default
-   typeface (via --font-sans below) and for the "Jarvis" wordmark. */
+   Ethnocentric (commercial font, not bundled). Reserved for headlines and the
+   "Jarvis" wordmark via the font-jarvis utility. */
 @font-face {
   font-family: "Audiowide";
   src: url("/fonts/Audiowide-Regular.ttf") format("truetype");
@@ -18,13 +18,25 @@
   font-display: swap;
 }
 
+/* Self-hosted Orbitron (OFL-licensed, see public/fonts/Orbitron-OFL.txt) — the
+   app-wide body typeface. One variable file carries the full 400–900 weight
+   range, so utilities like font-semibold render a real weight, not synthetic bold. */
+@font-face {
+  font-family: "Orbitron";
+  src: url("/fonts/Orbitron-VariableFont.ttf") format("truetype");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
+  /* Audiowide is the display/headline font (font-jarvis). */
   --font-jarvis: "Audiowide", sans-serif;
-  /* Make the Jarvis display font the application-wide default. Tailwind's
-     Preflight derives the base font-family from --font-sans, so every element
-     inherits Audiowide for Latin text; scripts it doesn't cover (e.g. Arabic)
-     fall back per-glyph to the system sans stack automatically. */
-  --font-sans: "Audiowide", ui-sans-serif, system-ui, sans-serif;
+  /* Orbitron is the body default. Tailwind's Preflight derives the base
+     font-family from --font-sans, so every element inherits Orbitron for Latin
+     text unless it opts into font-jarvis; scripts Orbitron doesn't cover (e.g.
+     Arabic) fall back per-glyph to the system sans stack automatically. */
+  --font-sans: "Orbitron", ui-sans-serif, system-ui, sans-serif;
 }
 
 html,
