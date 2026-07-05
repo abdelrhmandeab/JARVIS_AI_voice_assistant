@@ -40,7 +40,7 @@ export function AuroraAvatar({ state, amplitude, color }: AvatarProps) {
   // Static CSS-orb fallback if no WebGL context is available.
   const fallback = (
     <div
-      className="absolute left-1/2 top-1/2 h-[132px] w-[132px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+      className="absolute left-1/2 top-1/2 h-[150px] w-[150px] -translate-x-1/2 -translate-y-1/2 rounded-full"
       style={{
         background: `radial-gradient(circle at 38% 32%, rgba(255,255,255,0.96) 0%, rgba(255,255,255,0.48) 14%, ${color} 48%, color-mix(in srgb, ${color} 42%, #05070D) 100%)`,
         boxShadow: `0 0 24px ${color}88, 0 0 58px ${color}33, inset -18px -24px 36px rgba(0,0,0,0.34), inset 12px 10px 18px rgba(255,255,255,0.18)`,
@@ -64,7 +64,7 @@ export function AuroraAvatar({ state, amplitude, color }: AvatarProps) {
         thickness={0.8}
         taper={3}
         saturation={1.4}
-        scale={1.35}
+        scale={1.5}
         glass
         glassSize={1}
         refraction={1}

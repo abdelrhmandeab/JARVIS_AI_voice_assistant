@@ -55,9 +55,27 @@ export interface ErrorEvent {
   type: 'error';
   message: string;
 }
+export interface NotifyEvent {
+  type: 'notify';
+  message: string;
+  tone?: 'info' | 'success' | 'error';
+}
 export interface ConfigEvent {
   type: 'config';
   values: ConfigValues;
+}
+export interface PinRequiredEvent {
+  type: 'pin_required';
+  description: string;
+  attempts_remaining: number;
+  expires_in_seconds: number;
+}
+export type PinResultStatus = 'executed' | 'wrong' | 'locked' | 'no_pending';
+export interface PinResultEvent {
+  type: 'pin_result';
+  status: PinResultStatus;
+  message: string;
+  attempts_remaining: number;
 }
 
 export type EngineEvent =
@@ -68,7 +86,10 @@ export type EngineEvent =
   | AmplitudeEvent
   | MetricsEvent
   | ErrorEvent
-  | ConfigEvent;
+  | NotifyEvent
+  | ConfigEvent
+  | PinRequiredEvent
+  | PinResultEvent;
 
 // UI -> Engine commands
 export interface TextCommandMessage {
@@ -93,33 +114,38 @@ export interface FeatureFlagMessage {
 export interface ConfigRequestMessage {
   type: 'config_request';
 }
+export interface PinAttemptMessage {
+  type: 'pin_attempt';
+  pin: string;
+}
 
 export type UICommand =
   | TextCommandMessage
   | MuteToggleMessage
   | SettingUpdateMessage
   | FeatureFlagMessage
-  | ConfigRequestMessage;
+  | ConfigRequestMessage
+  | PinAttemptMessage;
 
-// State colors matching Python ui/tray.py
+// Shared "bold premium" state palette — the single source of truth every avatar
+// (and the overlay's ambient glow) keys off, so all four stay in lockstep.
+// Vivid, saturated jewel tones, one distinct hue per state.
 export const STATE_COLORS: Record<DialogueState, string> = {
-  idle: '#5A5A5A',
-  listening: '#007E00',
-  processing: '#B28C00',
-  responding: '#0054B2',
-  confirming: '#B26200',
-  executing: '#3F3F8C',
-  follow_up: '#007054',
+  idle: '#22D3EE', // cyan — resting
+  listening: '#22C55E', // green — hearing you
+  processing: '#FBBF24', // amber — thinking
+  responding: '#3B82F6', // blue — speaking
+  confirming: '#FB923C', // orange — needs confirmation
+  executing: '#8B5CF6', // violet — acting
+  follow_up: '#14B8A6', // teal — continuing
 } as const;
 
-export const MOCK_WS_PORT = 8765;
+// Matches core.config.UI_BRIDGE_PORT's default (JARVIS_UI_BRIDGE_PORT).
+export const DEFAULT_BRIDGE_PORT = 9720;
 
-// WebSocket URL the UI connects to.
-// Defaults to the in-process Vite mock server (port 8765, no path).
-// Set VITE_JARVIS_WS_URL to target the real Python bridge, e.g.
-//   VITE_JARVIS_WS_URL=ws://127.0.0.1:9720/ws
-// `import.meta.env` is undefined when this module is evaluated in a plain Node
-// context (e.g. vite.config.ts loading the mock server), so guard the access.
+// WebSocket URL the UI connects to — the real Python bridge (ui/bridge.py) at
+// ws://127.0.0.1:9720/ws. Override with VITE_JARVIS_WS_URL if the bridge runs
+// elsewhere. `import.meta.env` is undefined when this module is evaluated in a
+// plain Node context, so guard the access.
 const viteEnv = import.meta.env as ImportMetaEnv | undefined;
-export const JARVIS_WS_URL =
-  viteEnv?.VITE_JARVIS_WS_URL ?? `ws://localhost:${MOCK_WS_PORT}`;
+export const JARVIS_WS_URL = viteEnv?.VITE_JARVIS_WS_URL ?? `ws://127.0.0.1:${DEFAULT_BRIDGE_PORT}/ws`;

@@ -40,7 +40,9 @@ export function GlyphAvatar({ state, amplitude, color }: AvatarProps) {
         const angle = (i / 28) * Math.PI * 2 - Math.PI / 2;
         const phase = Math.sin(tick * (state === 'responding' ? 2.2 : 1.4) + i * 0.55);
         const scale = state === 'responding' ? 0.65 + Math.max(0, phase) * 1.1 : 0.75 + (phase * 0.5 + 0.5) * (0.45 + amp);
-        const radius = 84 + scale * 4;
+        // Orbit radius normalized so the dot ring spans ~150px, matching the
+        // other avatars (was 84 → a ~180px ring that read noticeably larger).
+        const radius = 70 + scale * 4;
         ctx.globalAlpha = 0.18 + Math.max(0, phase) * 0.72;
         ctx.fillStyle = color;
         ctx.beginPath();
