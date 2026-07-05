@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Theme is chosen by the user (dark default / light / auto) and stamped onto
+   <html data-theme> by src/lib/theme.ts. Redefine Tailwind's `dark:` variant to
+   key off that attribute instead of the OS media query, so an explicit choice
+   wins and "auto" is already resolved to a concrete value before it reaches the
+   DOM. Components use light-mode base classes with `dark:` overrides. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* Self-hosted (OFL-licensed, see public/fonts/Audiowide-OFL.txt) stand-in for
    Ethnocentric (commercial font, not bundled) — used only for the "Jarvis"
    wordmark via the `font-jarvis` utility class below. */
@@ -40,4 +47,12 @@ body,
 }
 .frameless-scroll::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Light theme: dark thumb over the pale glass instead of an invisible white one. */
+:root[data-theme="light"] .frameless-scroll {
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+}
+:root[data-theme="light"] .frameless-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.22);
 }

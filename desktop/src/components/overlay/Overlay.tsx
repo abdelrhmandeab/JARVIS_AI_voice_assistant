@@ -93,7 +93,7 @@ export function Overlay({ send }: OverlayProps) {
         </main>
 
         {textPromptEnabled ? (
-          <div className="relative m-3 flex items-center gap-2 rounded border border-white/10 bg-[#0A0A0F]/70 p-2 shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <div className="relative m-3 flex items-center gap-2 rounded border border-black/10 bg-white/75 p-2 shadow-2xl shadow-black/15 backdrop-blur-xl dark:border-white/10 dark:bg-[#0A0A0F]/70 dark:shadow-black/40">
             <PromptInput send={send} />
           <button
             type="button"
@@ -102,8 +102,8 @@ export function Overlay({ send }: OverlayProps) {
             title={muted ? 'Unmute' : 'Mute'}
             className={`grid h-10 w-10 shrink-0 place-items-center rounded border transition ${
               muted
-                ? 'border-red-300/30 bg-red-400/15 text-red-100 hover:bg-red-400/20'
-                : 'border-white/10 bg-white/[0.06] text-white/75 hover:bg-white/[0.1]'
+                ? 'border-red-400/30 bg-red-400/15 text-red-600 hover:bg-red-400/20 dark:border-red-300/30 dark:text-red-100'
+                : 'border-black/10 bg-black/[0.04] text-slate-600 hover:bg-black/[0.07] dark:border-white/10 dark:bg-white/[0.06] dark:text-white/75 dark:hover:bg-white/[0.1]'
             }`}
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -133,7 +133,7 @@ export function Overlay({ send }: OverlayProps) {
             }}
             aria-label="Dashboard"
             title="Dashboard"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded border border-white/10 bg-white/[0.06] text-white/80 transition hover:border-[#8EEBFF]/35 hover:text-white"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded border border-black/10 bg-black/[0.04] text-slate-600 transition hover:border-cyan-500/40 hover:text-slate-900 dark:border-white/10 dark:bg-white/[0.06] dark:text-white/80 dark:hover:border-[#8EEBFF]/35 dark:hover:text-white"
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path

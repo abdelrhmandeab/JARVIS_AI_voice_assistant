@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { ConfigValues, DialogueState, EngineEvent, FeatureFlags, Language, PinResultStatus } from '../protocol';
+import type { ThemePreference } from '../lib/theme';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 export type AvatarDirection = 'aurora' | 'glyph' | 'glassai' | 'companion';
@@ -39,6 +40,7 @@ interface JarvisState {
   avatarDirection: AvatarDirection;
   previewDialogueState: DialogueState | null;
   textPromptEnabled: boolean;
+  theme: ThemePreference;
   pinRequired: PinRequiredState | null;
   pinResult: PinResultState | null;
   dispatch: (event: EngineEvent) => void;
@@ -48,6 +50,7 @@ interface JarvisState {
   setAppView: (view: AppView) => void;
   setUiLanguage: (language: UiLanguage) => void;
   setTextPromptEnabled: (enabled: boolean) => void;
+  setTheme: (theme: ThemePreference) => void;
   setFeatureFlagLocal: (flag: keyof FeatureFlags, enabled: boolean) => void;
   setConfigValueLocal: <K extends keyof ConfigValues>(key: K, value: ConfigValues[K]) => void;
   previewState: (state: DialogueState | null) => void;
@@ -74,6 +77,7 @@ const initialState = {
   avatarDirection: 'glassai' as AvatarDirection,
   previewDialogueState: null,
   textPromptEnabled: true,
+  theme: 'dark' as ThemePreference,
   pinRequired: null,
   pinResult: null,
   lastError: null,
@@ -170,6 +174,7 @@ export const useJarvisStore = create<JarvisState>()(
       setAppView: (appView) => set({ appView }),
       setUiLanguage: (uiLanguage) => set({ uiLanguage }),
       setTextPromptEnabled: (textPromptEnabled) => set({ textPromptEnabled }),
+      setTheme: (theme) => set({ theme }),
       setFeatureFlagLocal: (flag, enabled) =>
         set((state) => {
           if (!state.config) {
@@ -211,6 +216,7 @@ export const useJarvisStore = create<JarvisState>()(
         appView: state.appView,
         textPromptEnabled: state.textPromptEnabled,
         muted: state.muted,
+        theme: state.theme,
       }),
     },
   ),

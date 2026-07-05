@@ -125,14 +125,16 @@ export function PinModal({ send }: PinModalProps) {
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-          className="pointer-events-auto z-20 w-[260px] rounded-md border border-white/10 bg-black/80 p-4 text-white shadow-2xl shadow-black/40 backdrop-blur-xl"
+          className="pointer-events-auto z-20 w-[260px] rounded-md border border-black/10 bg-white/85 p-4 text-slate-800 shadow-2xl shadow-black/15 backdrop-blur-xl dark:border-white/10 dark:bg-black/80 dark:text-white dark:shadow-black/40"
         >
           {lingering ? (
           <div className="grid gap-2 text-center">
             <p
               dir={directionOf(lingering.message)}
               className={`text-sm font-medium ${
-                lingering.status === 'executed' ? 'text-cyan-100' : 'text-red-200'
+                lingering.status === 'executed'
+                  ? 'text-cyan-700 dark:text-cyan-100'
+                  : 'text-red-600 dark:text-red-200'
               }`}
             >
               {lingering.message}
@@ -146,16 +148,18 @@ export function PinModal({ send }: PinModalProps) {
             className="grid gap-3"
           >
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-50/70">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-50/70">
                 PIN required
               </p>
-              <p dir={directionOf(description)} className="mt-1 text-sm text-white/85">
+              <p dir={directionOf(description)} className="mt-1 text-sm text-slate-700 dark:text-white/85">
                 {description}
               </p>
             </div>
 
             {expired ? (
-              <p className="text-xs text-red-200">This PIN request expired. Repeat your command to try again.</p>
+              <p className="text-xs text-red-600 dark:text-red-200">
+                This PIN request expired. Repeat your command to try again.
+              </p>
             ) : (
               <>
                 <input
@@ -172,20 +176,20 @@ export function PinModal({ send }: PinModalProps) {
                   }}
                   placeholder="Enter PIN"
                   aria-label="PIN"
-                  className="h-11 w-full rounded border border-white/10 bg-white/[0.07] px-3 text-center text-lg tracking-[0.4em] text-white outline-none transition focus:border-[#8EEBFF]/70 focus:bg-white/[0.1] disabled:opacity-50"
+                  className="h-11 w-full rounded border border-black/10 bg-black/[0.04] px-3 text-center text-lg tracking-[0.4em] text-slate-900 outline-none transition focus:border-cyan-500/60 focus:bg-black/[0.06] disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.07] dark:text-white dark:focus:border-[#8EEBFF]/70 dark:focus:bg-white/[0.1]"
                 />
 
-                <div className="flex items-center justify-between text-[11px] text-white/50">
+                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-white/50">
                   <span>{pinRequired ? `${pinRequired.attemptsRemaining} attempt(s) left` : ''}</span>
                   <span>{secondsLeft}s</span>
                 </div>
 
                 {partialTranscript ? (
-                  <p dir={directionOf(partialTranscript)} className="text-[11px] text-white/45">
+                  <p dir={directionOf(partialTranscript)} className="text-[11px] text-slate-500 dark:text-white/45">
                     Hearing: {partialTranscript}
                   </p>
                 ) : (
-                  <p className="text-[11px] text-white/35">Type it, or just say your PIN.</p>
+                  <p className="text-[11px] text-slate-400 dark:text-white/35">Type it, or just say your PIN.</p>
                 )}
               </>
             )}
@@ -194,7 +198,7 @@ export function PinModal({ send }: PinModalProps) {
               <button
                 type="button"
                 onClick={handleCancel}
-                className="h-9 flex-1 rounded border border-white/10 bg-white/[0.05] text-xs font-medium text-white/70 transition hover:bg-white/[0.09]"
+                className="h-9 flex-1 rounded border border-black/10 bg-black/[0.04] text-xs font-medium text-slate-600 transition hover:bg-black/[0.07] dark:border-white/10 dark:bg-white/[0.05] dark:text-white/70 dark:hover:bg-white/[0.09]"
               >
                 Cancel
               </button>
@@ -203,7 +207,7 @@ export function PinModal({ send }: PinModalProps) {
                   type="button"
                   disabled={disabled || !digits}
                   onClick={() => submit(digits)}
-                  className="h-9 flex-1 rounded border border-[#8EEBFF]/30 bg-[#8EEBFF]/12 text-xs font-medium text-[#DDFBFF] transition hover:bg-[#8EEBFF]/18 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="h-9 flex-1 rounded border border-cyan-500/40 bg-cyan-400/20 text-xs font-medium text-cyan-700 transition hover:bg-cyan-400/30 disabled:cursor-not-allowed disabled:opacity-40 dark:border-[#8EEBFF]/30 dark:bg-[#8EEBFF]/12 dark:text-[#DDFBFF] dark:hover:bg-[#8EEBFF]/18"
                 >
                   Confirm
                 </button>

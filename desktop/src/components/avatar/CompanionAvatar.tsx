@@ -1,6 +1,7 @@
 import { useId, useState, type CSSProperties } from 'react';
 import { useReducedMotion } from 'motion/react';
 import type { DialogueState } from '../../protocol';
+import { useResolvedTheme } from '../../lib/theme';
 
 // Displacement map used by the liquid-glass background filter below —
 // physically refracts the backdrop in Chrome/Edge instead of just blurring it.
@@ -13,9 +14,15 @@ interface AvatarProps {
 }
 
 export function CompanionAvatar({ state, color }: AvatarProps) {
-  const active = state === 'idle' ? '#AEEFFF' : color;
-  // Logo: white at rest, tinted with the state color once active.
-  const logoColor = state === 'idle' ? '#FFFFFF' : color;
+  const resolvedTheme = useResolvedTheme();
+  const isLight = resolvedTheme === 'light';
+  // Idle accent/logo need enough contrast against the frosted lens: a deeper cyan
+  // and near-black logo on the pale light lens; the pale cyan and white on dark.
+  const idleAccent = isLight ? '#2FA9CE' : '#AEEFFF';
+  const idleLogo = isLight ? '#0B1220' : '#FFFFFF';
+  const active = state === 'idle' ? idleAccent : color;
+  // Logo: neutral at rest, tinted with the state color once active.
+  const logoColor = state === 'idle' ? idleLogo : color;
   const shouldReduceMotion = useReducedMotion();
   // The L-shapes slide apart through the running/execution states, and the whole
   // logo spins while processing/executing.
@@ -94,13 +101,14 @@ export function CompanionAvatar({ state, color }: AvatarProps) {
           willChange: 'transform',
         }}
       >
-        {/* liquid-glass background base — static design only, no hover/press motion */}
+        {/* liquid-glass background base — static design only, no hover/press motion.
+            A pale frosted tint in light mode, near-black glass in dark. */}
         <div
           aria-hidden="true"
           style={{
             position: 'absolute',
             inset: 0,
-            backgroundColor: 'rgba(6,8,14,0.55)',
+            backgroundColor: isLight ? 'rgba(255,255,255,0.42)' : 'rgba(6,8,14,0.55)',
             backdropFilter: `blur(8px) url(#companion-liquid-glass-${filterId}) saturate(150%)`,
             WebkitBackdropFilter: 'blur(8px) saturate(150%)',
             boxShadow: lensBoxShadow,
