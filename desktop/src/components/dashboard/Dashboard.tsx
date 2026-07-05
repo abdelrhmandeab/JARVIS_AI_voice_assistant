@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { UICommand, FeatureFlags } from '../../protocol';
 import { backToOverlay, closeApp } from '../../lib/app';
 import { GradientBackground } from '../GradientBackground';
@@ -206,14 +206,6 @@ export function Dashboard({ send }: DashboardProps) {
   // Locally dismissible "config not arrived" hint, shown as a notification.
   const [configHintDismissed, setConfigHintDismissed] = useState(false);
 
-  // Mock-only model picker: lets the user browse the available models without
-  // reconfiguring the engine (no setting_update is sent). It tracks the engine's
-  // reported model so it stays believable, but changing it is purely cosmetic.
-  const [previewModel, setPreviewModel] = useState<string>(config?.model ?? 'auto');
-  useEffect(() => {
-    if (config?.model) setPreviewModel(config.model);
-  }, [config?.model]);
-
   const connection = CONNECTION_META[connectionStatus];
 
   const handleLanguageChange = (language: UiLanguage) => {
@@ -347,10 +339,16 @@ export function Dashboard({ send }: DashboardProps) {
           </Section>
 
           <Section title="Model">
-            <Select label="LLM model" value={previewModel} options={modelOptions} onChange={setPreviewModel} />
-            <p className="text-[11px] text-slate-500 dark:text-white/45">
-              Preview only — selecting a model here doesn't change the running engine yet.
-            </p>
+            <Select
+              label="LLM model"
+              value={config?.model ?? 'auto'}
+              options={modelOptions}
+              disabled={!hasConfig}
+              onChange={(model) => {
+                setConfigValueLocal('model', model);
+                send({ type: 'setting_update', key: 'JARVIS_LLM_MODEL', value: model });
+              }}
+            />
           </Section>
 
           <Section title="Features">

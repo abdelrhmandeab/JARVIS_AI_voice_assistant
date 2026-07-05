@@ -276,6 +276,7 @@ def ask_llm_streaming(prompt, on_sentence=None, num_ctx=None, is_arabic=False, c
                     model_name,
                     err[:120],
                 )
+                _notify_ui_model_unavailable(model_name, stream_response.status_code, err)
                 return "I could not run the local model."
 
             for raw_line in stream_response.iter_lines():
@@ -397,6 +398,37 @@ def ask_llm_streaming(prompt, on_sentence=None, num_ctx=None, is_arabic=False, c
         record_stage_timing("llm_generation", llm_elapsed, model=model_name)
 
 
+def _notify_ui_model_unavailable(model_name, status_code, err_text):
+    """When an LLM request fails because the model isn't installed in Ollama,
+    surface it to the desktop UI as an error notification. No-op for unrelated
+    failures, and a safe no-op when the UI bridge isn't running/connected."""
+    detail = str(err_text or "").lower()
+    looks_missing = (
+        status_code == 404
+        or "not found" in detail
+        or "try pulling" in detail
+        or "no such model" in detail
+    )
+    if not looks_missing:
+        return
+    try:
+        from ui.bridge import bridge as ui_bridge
+        from ui.events import EVENT_ERROR, make_event
+
+        ui_bridge.broadcast(
+            make_event(
+                EVENT_ERROR,
+                message=(
+                    f"Model '{model_name}' isn't installed in Ollama. "
+                    f"Pull it first: ollama pull {model_name}"
+                ),
+                recoverable=True,
+            )
+        )
+    except Exception:
+        pass
+
+
 def ask_llm(prompt, num_ctx=None, timeout_seconds=None, allow_fallbacks=True):
     started = time.perf_counter()
     success = False
@@ -459,6 +491,10 @@ def ask_llm(prompt, num_ctx=None, timeout_seconds=None, allow_fallbacks=True):
                 candidate_model,
                 err_text or "unknown_error",
             )
+            # Only report the user's primary/selected model (idx 0), not the
+            # internal fallback candidates tried afterward.
+            if idx == 0:
+                _notify_ui_model_unavailable(candidate_model, response.status_code, err_text)
 
         if connect_seen and not timeout_seen:
             return "Cannot connect to Ollama. Make sure it is running."
