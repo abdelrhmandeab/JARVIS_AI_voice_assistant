@@ -127,15 +127,17 @@ export type UICommand =
   | ConfigRequestMessage
   | PinAttemptMessage;
 
-// State colors matching Python ui/tray.py
+// Shared "bold premium" state palette — the single source of truth every avatar
+// (and the overlay's ambient glow) keys off, so all four stay in lockstep.
+// Vivid, saturated jewel tones, one distinct hue per state.
 export const STATE_COLORS: Record<DialogueState, string> = {
-  idle: '#5A5A5A',
-  listening: '#007E00',
-  processing: '#B28C00',
-  responding: '#0054B2',
-  confirming: '#B26200',
-  executing: '#3F3F8C',
-  follow_up: '#007054',
+  idle: '#22D3EE', // cyan — resting
+  listening: '#22C55E', // green — hearing you
+  processing: '#FBBF24', // amber — thinking
+  responding: '#3B82F6', // blue — speaking
+  confirming: '#FB923C', // orange — needs confirmation
+  executing: '#8B5CF6', // violet — acting
+  follow_up: '#14B8A6', // teal — continuing
 } as const;
 
 // Matches core.config.UI_BRIDGE_PORT's default (JARVIS_UI_BRIDGE_PORT).

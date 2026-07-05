@@ -29,7 +29,9 @@ function autoSpeedForState(state: DialogueState): number {
 }
 
 export function GlassAIAvatar({ state, color }: AvatarProps) {
-  const active = state === 'idle' ? '#AEEFFF' : color;
+  // Use the shared state palette for every state, idle included, so all avatars
+  // glow the same color.
+  const active = color;
   const shouldReduceMotion = useReducedMotion();
 
   // Static fallback (centered rounded tile outline) if no WebGL context exists.

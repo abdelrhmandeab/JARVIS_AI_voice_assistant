@@ -31,7 +31,9 @@ const avatarOptions: Array<DashboardOption<AvatarDirection>> = [
   { label: 'Jarvis', value: 'companion' },
   { label: 'Aurora', value: 'aurora' },
   { label: 'Glyph', value: 'glyph' },
-  { label: 'Glass AI', value: 'glassai' },
+  // "Prism" is the glass-lens avatar; value stays 'glassai' so existing
+  // persisted selections and the GlassAIAvatar component keep working.
+  { label: 'Prism', value: 'glassai' },
 ];
 
 const languageOptions: Array<DashboardOption<UiLanguage>> = [
