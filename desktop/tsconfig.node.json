@@ -8,5 +8,5 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["vite.config.ts", "src/mock/**/*.ts"]
+  "include": ["vite.config.ts"]
 }
