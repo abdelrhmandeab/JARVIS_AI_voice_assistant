@@ -55,6 +55,11 @@ export interface ErrorEvent {
   type: 'error';
   message: string;
 }
+export interface NotifyEvent {
+  type: 'notify';
+  message: string;
+  tone?: 'info' | 'success' | 'error';
+}
 export interface ConfigEvent {
   type: 'config';
   values: ConfigValues;
@@ -81,6 +86,7 @@ export type EngineEvent =
   | AmplitudeEvent
   | MetricsEvent
   | ErrorEvent
+  | NotifyEvent
   | ConfigEvent
   | PinRequiredEvent
   | PinResultEvent;

@@ -21,6 +21,7 @@ from ui.events import (
     EVENT_CONFIG,
     EVENT_ERROR,
     EVENT_HEALTH,
+    EVENT_NOTIFY,
     EVENT_PIN_RESULT,
     EVENT_RESPONSE,
     EVENT_STATE_CHANGED,
@@ -245,6 +246,11 @@ class JarvisBridge:
             if flag in config.FEATURE_FLAGS:
                 config.FEATURE_FLAGS[flag] = enabled
                 logger.info("UI bridge feature_flag applied: flag=%s enabled=%s", flag, enabled)
+                # Enabling app discovery kicks off an immediate catalog rescan so
+                # newly installed apps become usable right away; otherwise the flag
+                # only gates the *next* scan and toggling it on looks like a no-op.
+                if flag == "AUTO_APP_DISCOVERY_ENABLED" and enabled:
+                    asyncio.create_task(self._rescan_app_catalog())
             else:
                 logger.info("UI bridge feature_flag ignored (unknown flag): %s", flag)
             await websocket.send_text(to_json(self._config_event()))
@@ -287,6 +293,34 @@ class JarvisBridge:
                 logger.info("UI bridge setting_update ignored (unknown key): %s", key)
         except Exception:
             logger.exception("UI bridge setting_update failed for key=%s", key)
+
+    async def _rescan_app_catalog(self) -> None:
+        """Rescan installed apps in the background when Auto app discovery is
+        switched on, so newly installed apps are usable immediately. Runs off the
+        event loop; only a failure is surfaced to the UI (as a notification)."""
+        try:
+            from os_control.app_ops import refresh_app_catalog_result
+
+            result = await asyncio.to_thread(refresh_app_catalog_result, True)
+            if isinstance(result, dict) and not result.get("success", False):
+                self.broadcast(
+                    make_event(
+                        EVENT_ERROR,
+                        message=result.get("user_message") or "Auto app discovery rescan failed.",
+                        recoverable=True,
+                    )
+                )
+            else:
+                logger.info("UI bridge app-catalog rescan complete.")
+                message = "App list refreshed."
+                if isinstance(result, dict) and result.get("user_message"):
+                    message = str(result["user_message"])
+                self.broadcast(make_event(EVENT_NOTIFY, message=message, tone="success"))
+        except Exception:
+            logger.exception("UI bridge app-catalog rescan failed")
+            self.broadcast(
+                make_event(EVENT_ERROR, message="Auto app discovery rescan failed.", recoverable=True)
+            )
 
     def _route_text_command(self, text: str, language) -> str:
         try:

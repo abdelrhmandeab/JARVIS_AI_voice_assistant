@@ -14,6 +14,9 @@ EVENT_AMPLITUDE = "amplitude"
 EVENT_METRICS = "metrics"
 EVENT_HEALTH = "health"
 EVENT_ERROR = "error"
+# General-purpose user notification (info/success/error tone). Distinct from
+# EVENT_ERROR, which is specifically for failures and also sets lastError.
+EVENT_NOTIFY = "notify"
 EVENT_CONFIG = "config"
 EVENT_PIN_REQUIRED = "pin_required"
 EVENT_PIN_RESULT = "pin_result"

@@ -82,6 +82,21 @@ describe('jarvisStore', () => {
     expect(useJarvisStore.getState().notifications).toHaveLength(0);
   });
 
+  it('pushes a toned notification for notify events', () => {
+    useJarvisStore.getState().dispatch({ type: 'notify', message: 'App list refreshed.', tone: 'success' });
+
+    expect(useJarvisStore.getState().notifications[0]).toMatchObject({
+      message: 'App list refreshed.',
+      tone: 'success',
+    });
+  });
+
+  it('defaults notify tone to info when omitted', () => {
+    useJarvisStore.getState().dispatch({ type: 'notify', message: 'heads up' });
+
+    expect(useJarvisStore.getState().notifications[0].tone).toBe('info');
+  });
+
   it('skips identical back-to-back notifications and caps the queue', () => {
     const { notify } = useJarvisStore.getState();
     notify('same', 'info');

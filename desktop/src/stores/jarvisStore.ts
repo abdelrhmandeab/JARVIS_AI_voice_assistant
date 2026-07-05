@@ -178,6 +178,11 @@ export const useJarvisStore = create<JarvisState>()(
               notifications: appendNotification(state.notifications, event.message, 'error'),
             }));
             break;
+          case 'notify':
+            set((state) => ({
+              notifications: appendNotification(state.notifications, event.message, event.tone ?? 'info'),
+            }));
+            break;
           case 'config':
             set({ config: event.values });
             break;
