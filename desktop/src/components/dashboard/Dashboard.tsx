@@ -145,7 +145,7 @@ function Section({
 }) {
   return (
     <section
-      className={`rounded-md border border-black/[0.08] bg-white/70 p-3 text-slate-800 shadow-2xl shadow-black/10 backdrop-blur dark:border-white/10 dark:bg-black/70 dark:text-white dark:shadow-black/35 ${className}`}
+      className={`rounded-md border border-black/[0.08] bg-white/55 p-3 text-slate-800 shadow-2xl shadow-black/10 backdrop-blur-md dark:border-white/10 dark:bg-black/50 dark:text-white dark:shadow-black/35 ${className}`}
     >
       <PanelLabel>{title}</PanelLabel>
       <div className="grid gap-3">{children}</div>
@@ -232,7 +232,7 @@ export function Dashboard({ send }: DashboardProps) {
           themes — a pale surface in light mode, near-black in dark. */}
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-0 z-0 bg-[#E9EDF6]/92 backdrop-blur-xl dark:bg-[#0A0A0F]/95"
+        className="pointer-events-none fixed inset-0 z-0 bg-[#E9EDF6]/62 backdrop-blur-xl dark:bg-[#0A0A0F]/64"
       >
         <div className="absolute inset-0 opacity-40 dark:opacity-35">
           <GradientBackground
@@ -353,7 +353,7 @@ export function Dashboard({ send }: DashboardProps) {
             </p>
           </Section>
 
-          <Section title="Feature Flags">
+          <Section title="Features">
             {featureFlags.map(({ flag, label, description }) => (
               <div key={flag} className="grid gap-1.5">
                 <Toggle

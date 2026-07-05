@@ -14,7 +14,7 @@ export function FloatingPanel({
 }) {
   return (
     <aside
-      className={`z-50 rounded-md border border-black/[0.08] bg-white/70 p-3 text-[11px] text-slate-700 shadow-2xl backdrop-blur dark:border-white/10 dark:bg-black/70 dark:text-white ${className}`}
+      className={`z-50 rounded-md border border-black/[0.08] bg-white/55 p-3 text-[11px] text-slate-700 shadow-2xl backdrop-blur-md dark:border-white/10 dark:bg-black/50 dark:text-white ${className}`}
     >
       {children}
     </aside>

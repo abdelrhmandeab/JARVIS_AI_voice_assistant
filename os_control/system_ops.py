@@ -1992,16 +1992,36 @@ def execute_system_command_result(action_key, command_args=None, language=None):
 
     # Native-first volume/brightness control (falls through to PowerShell if unavailable)
     if action_key in {"volume_up", "volume_down", "volume_mute", "volume_set"}:
-        if FEATURE_FLAGS.get("SYSTEM_VOLUME_CONTROL", True):
-            native_ok, native_msg, native_debug = _run_native_volume_command(action_key, normalized_args)
-        else:
-            native_ok, native_msg, native_debug = False, "", {}
+        # Feature toggle: when disabled, block volume control outright instead of
+        # silently falling through to the PowerShell template fallback below.
+        if not FEATURE_FLAGS.get("SYSTEM_VOLUME_CONTROL", True):
+            log_action("system_command", "blocked", details={"action": action_key, "reason": "feature_disabled"})
+            log_structured("system_command_executed", action=action_key, success=False, error="feature_disabled")
+            msg = (
+                "التحكم في مستوى الصوت متوقّف حاليًا."
+                if _is_arabic_language(language)
+                else "System volume control is turned off."
+            )
+            return failure_result(msg, error_code="feature_disabled", debug_info={"action": action_key})
+        native_ok, native_msg, native_debug = _run_native_volume_command(action_key, normalized_args)
         if native_ok:
             log_action("system_command", "success", details={"action": action_key, **native_debug})
             log_structured("system_command_executed", action=action_key, success=True, method=native_debug.get("method"), level="info")
             return success_result(native_msg, debug_info={"action": action_key, **native_debug})
 
     if action_key in {"media_play_pause", "media_next_track", "media_previous_track", "media_stop"}:
+        # Feature toggle: when disabled, block media control outright instead of
+        # silently falling through to the PowerShell template fallback below.
+        if not FEATURE_FLAGS.get("MEDIA_DIRECT_DISPATCH_ENABLED", True):
+            log_action("system_command", "blocked", details={"action": action_key, "reason": "feature_disabled"})
+            log_structured("system_command_executed", action=action_key, success=False, error="feature_disabled")
+            msg = (
+                "التحكم في الوسائط متوقّف حاليًا."
+                if _is_arabic_language(language)
+                else "Media control is turned off."
+            )
+            return failure_result(msg, error_code="feature_disabled", debug_info={"action": action_key})
+
         # NEW: Prevent media commands from interfering with TTS playback
         # If TTS is currently speaking, wait a moment for it to finish
         from audio.tts import speech_engine
@@ -2010,11 +2030,8 @@ def execute_system_command_result(action_key, command_args=None, language=None):
         start_time = time.time()
         while speech_engine.is_speaking() and (time.time() - start_time) < max_wait_time:
             time.sleep(0.05)
-        
-        if FEATURE_FLAGS.get("MEDIA_DIRECT_DISPATCH_ENABLED", True):
-            native_ok, native_msg, native_debug = _run_native_media_command(action_key, language=language)
-        else:
-            native_ok, native_msg, native_debug = False, "", {}
+
+        native_ok, native_msg, native_debug = _run_native_media_command(action_key, language=language)
         if native_ok:
             log_action("system_command", "success", details={"action": action_key, **native_debug})
             log_structured("system_command_executed", action=action_key, success=True, method=native_debug.get("method"))

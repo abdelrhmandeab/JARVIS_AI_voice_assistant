@@ -108,7 +108,7 @@ export function CompanionAvatar({ state, color }: AvatarProps) {
           style={{
             position: 'absolute',
             inset: 0,
-            backgroundColor: isLight ? 'rgba(255,255,255,0.42)' : 'rgba(6,8,14,0.55)',
+            backgroundColor: isLight ? 'rgba(255,255,255,0.28)' : 'rgba(6,8,14,0.4)',
             backdropFilter: `blur(8px) url(#companion-liquid-glass-${filterId}) saturate(150%)`,
             WebkitBackdropFilter: 'blur(8px) saturate(150%)',
             boxShadow: lensBoxShadow,

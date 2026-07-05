@@ -125,7 +125,7 @@ export function PinModal({ send }: PinModalProps) {
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-          className="pointer-events-auto z-20 w-[260px] rounded-md border border-black/10 bg-white/85 p-4 text-slate-800 shadow-2xl shadow-black/15 backdrop-blur-xl dark:border-white/10 dark:bg-black/80 dark:text-white dark:shadow-black/40"
+          className="pointer-events-auto z-20 w-[260px] rounded-md border border-black/10 bg-white/62 p-4 text-slate-800 shadow-2xl shadow-black/15 backdrop-blur-xl dark:border-white/10 dark:bg-black/58 dark:text-white dark:shadow-black/40"
         >
           {lingering ? (
           <div className="grid gap-2 text-center">
