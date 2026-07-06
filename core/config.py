@@ -198,10 +198,18 @@ WAKE_WORD_DEPRECATED_KEYS = tuple(
 # STT
 STT_BACKEND = _env(
     "JARVIS_STT_BACKEND",
-    "hybrid_elevenlabs",
-)  # hybrid_elevenlabs | faster_whisper
-if STT_BACKEND not in {"hybrid_elevenlabs", "faster_whisper"}:
-    STT_BACKEND = "hybrid_elevenlabs"
+    "elevenlabs_scribe",
+)  # elevenlabs_scribe | hybrid_elevenlabs (legacy alias) | faster_whisper
+if STT_BACKEND not in {"elevenlabs_scribe", "hybrid_elevenlabs", "faster_whisper"}:
+    STT_BACKEND = "elevenlabs_scribe"
+
+# Which engine handles realtime STT per language. English uses local whisper
+# so it works offline / without cloud cost; auto+arabic use ElevenLabs Scribe v2.
+STT_ENGLISH_ENGINE = _env("JARVIS_STT_ENGLISH_ENGINE", "faster_whisper").strip() or "faster_whisper"
+# When the Scribe cloud call fails (network/quota) on a non-English turn,
+# fall back to local whisper so the assistant still responds. Set false for
+# strict Scribe-only behavior.
+STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL = _env_bool("JARVIS_STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL", True)
 
 ELEVENLABS_BASE_URL = _env("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io").strip() or "https://api.elevenlabs.io"
 ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY", "").strip()

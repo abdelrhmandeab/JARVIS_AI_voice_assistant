@@ -18,7 +18,9 @@ from core.config import (
     ELEVENLABS_API_KEY,
     ELEVENLABS_BASE_URL,
     STT_BACKEND,
+    STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL,
     STT_CLOUD_RACE_LANGUAGES,
+    STT_ENGLISH_ENGINE,
     STT_ELEVENLABS_CONNECT_TIMEOUT_SECONDS,
     STT_ELEVENLABS_COOLDOWN_SECONDS,
     STT_ELEVENLABS_ENABLED,
@@ -1640,11 +1642,18 @@ def transcribe_streaming_with_meta(
     streaming_text: str = "",
     whisper_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    preferred_backend = get_runtime_stt_backend()
+    hint = str(language_hint or _runtime_language_hint() or "auto").strip().lower()
+    if hint == "en" and str(STT_ENGLISH_ENGINE or "faster_whisper").strip().lower() == "faster_whisper":
+        chain = [_LOCAL_BACKEND]                    # English -> whisper only
+    else:
+        chain = [_SCRIBE_BACKEND]                   # auto/ar -> Scribe v2
+        if bool(STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL):
+            chain.append(_LOCAL_BACKEND)            # safety net on cloud failure
+    preferred_backend = chain[0]
     attempted: List[str] = []
     errors: List[str] = []
 
-    for backend in [preferred_backend, _LOCAL_BACKEND]:
+    for backend in chain:
         if is_shutdown_requested():
             failed = _shutdown_result(backend=preferred_backend, method=preferred_backend)
             failed["errors"] = list(errors) + list(failed.get("errors") or [])
