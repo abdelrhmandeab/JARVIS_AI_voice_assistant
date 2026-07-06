@@ -258,10 +258,19 @@ class JarvisBridge:
 
     def _apply_setting_update(self, key: str, value) -> None:
         try:
-            if key == "JARVIS_STT_LANGUAGE_HINT":
+            if key in {"JARVIS_STT_LANGUAGE_HINT", "language", "stt_language"}:
                 from audio.stt import set_runtime_stt_settings
 
-                set_runtime_stt_settings(language_hint=value)
+                val = str(value or "auto").strip().lower()
+                if val in {"en", "ar", "auto"}:
+                    set_runtime_stt_settings(language_hint=val)
+                    logger.info(
+                        "STT language hint set to '%s' (engine=%s)",
+                        val,
+                        "faster_whisper" if val == "en" else "elevenlabs_scribe",
+                    )
+                else:
+                    logger.info("UI bridge setting_update ignored (bad language value): %s", value)
             elif key == "JARVIS_LLM_MODEL":
                 from llm.ollama_client import set_runtime_model
                 from core.hardware_detect import recommend_model_tier
@@ -338,12 +347,20 @@ class JarvisBridge:
         except Exception:
             persona = getattr(config, "PERSONA_DEFAULT", "")
 
+        try:
+            from audio.stt import get_runtime_stt_settings
+
+            stt_language_hint = str(get_runtime_stt_settings().get("language_hint") or "auto").strip().lower()
+        except Exception:
+            stt_language_hint = "auto"
+
         values = {
             "model": model,
             "model_tier": "auto" if bool(getattr(config, "LLM_AUTO_SELECT_MODEL", False)) else "configured",
             "wake_mode": getattr(config, "WAKE_WORD_MODE", ""),
             "feature_flags": dict(getattr(config, "FEATURE_FLAGS", {}) or {}),
-            "stt_backend": getattr(config, "STT_BACKEND", ""),
+            "stt_backend": "faster_whisper" if stt_language_hint == "en" else "elevenlabs_scribe",
+            "stt_language_hint": stt_language_hint,
             "tts_backend": getattr(config, "TTS_DEFAULT_BACKEND", ""),
             "persona": persona,
         }
