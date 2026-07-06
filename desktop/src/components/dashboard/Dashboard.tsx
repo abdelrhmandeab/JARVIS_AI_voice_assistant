@@ -222,8 +222,8 @@ function SecuritySection({ pinSet, send }: { pinSet: boolean; send: (cmd: UIComm
   return (
     <Section title="Security">
       <div className="flex items-center justify-between gap-4">
-        <span className="text-sm font-medium text-white/72">Destructive-command PIN</span>
-        <span className="rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold text-white/70">
+        <span className="text-sm font-medium text-slate-600 dark:text-white/72">Destructive-command PIN</span>
+        <span className="rounded border border-black/10 bg-black/[0.03] px-2 py-1 text-[11px] font-semibold text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-white/70">
           {pinSet ? 'PIN set ••••' : 'Default PIN (insecure)'}
         </span>
       </div>
@@ -235,7 +235,7 @@ function SecuritySection({ pinSet, send }: { pinSet: boolean; send: (cmd: UIComm
           value={pin}
           onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
           placeholder="New PIN (4-8 digits)"
-          className="h-10 min-w-0 flex-1 rounded border border-white/10 bg-[#111118] px-3 text-sm text-white outline-none transition focus:border-[#8EEBFF]/65"
+          className="h-10 min-w-0 flex-1 rounded border border-black/10 bg-white px-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-500 focus:border-[#0F8FB8]/65 dark:border-white/10 dark:bg-[#111118] dark:text-white dark:placeholder:text-white/40 dark:focus:border-[#8EEBFF]/65"
         />
         <button
           type="submit"
@@ -386,7 +386,7 @@ export function Dashboard({ send }: DashboardProps) {
         <div className="grid gap-3 lg:grid-cols-2">
           <Section title="Text Prompt" className="lg:col-span-2">
             <Toggle label="Enable text prompt" checked={textPromptEnabled} onChange={setTextPromptEnabled} />
-            {textPromptEnabled ? <PromptInput send={send} /> : null}
+            {textPromptEnabled ? <PromptInput send={send} variant="surface" /> : null}
           </Section>
 
           <Section title="Avatar">

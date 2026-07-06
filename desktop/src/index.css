@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Ties Tailwind's `dark:` variant to the app's own theme preference
+   (data-theme, set by useApplyTheme from the persisted jarvisStore value)
+   instead of Tailwind v4's default `prefers-color-scheme` media query, so an
+   explicit Dark/Light choice in the dashboard actually overrides the OS. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* Self-hosted (OFL-licensed, see public/fonts/Audiowide-OFL.txt) stand-in for
    Ethnocentric (commercial font, not bundled) — used only for the "Jarvis"
    wordmark via the `font-jarvis` utility class below. */
