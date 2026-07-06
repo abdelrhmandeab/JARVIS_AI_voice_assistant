@@ -53,6 +53,20 @@ const voiceOptions: Array<DashboardOption<VoiceGender>> = [
   { label: 'Female', value: 'female' },
 ];
 
+// Maps the UI's binary male/female chip onto core.tts_voices.DEFAULT_PROFILES.
+// jarvis_male_calm exists in the engine but isn't exposed here — this chip is
+// intentionally simple; pick the profile directly via JARVIS_TTS_VOICE_PROFILE
+// (e.g. voice diagnostics) for the calmer male variant.
+const VOICE_GENDER_TO_PROFILE: Record<VoiceGender, string> = {
+  male: 'jarvis_male_classic',
+  female: 'jarvis_female_warm',
+};
+const VOICE_PROFILE_TO_GENDER: Record<string, VoiceGender> = {
+  jarvis_male_classic: 'male',
+  jarvis_male_calm: 'male',
+  jarvis_female_warm: 'female',
+};
+
 // Mirrors core.persona.PERSONA_PROFILES exactly so every engine persona is
 // selectable and config.persona always matches an option.
 const personaOptions: SelectOption[] = [
@@ -266,6 +280,12 @@ export function Dashboard({ send }: DashboardProps) {
 
   const hasConfig = config !== null;
 
+  // The engine's active profile is authoritative once config has arrived;
+  // fall back to the locally persisted preference beforehand so the chip
+  // still shows something sensible before the first config event.
+  const effectiveVoiceGender =
+    (config?.voice_profile && VOICE_PROFILE_TO_GENDER[config.voice_profile]) || voiceGender;
+
   // Locally dismissible "config not arrived" hint, shown as a notification.
   const [configHintDismissed, setConfigHintDismissed] = useState(false);
 
@@ -279,6 +299,11 @@ export function Dashboard({ send }: DashboardProps) {
   const handleMutedChange = (nextMuted: boolean) => {
     setMuted(nextMuted);
     send({ type: 'mute_toggle', muted: nextMuted });
+  };
+
+  const handleVoiceChange = (gender: VoiceGender) => {
+    setVoiceGender(gender);
+    send({ type: 'setting_update', key: 'JARVIS_TTS_VOICE_PROFILE', value: VOICE_GENDER_TO_PROFILE[gender] });
   };
 
   return (
@@ -381,11 +406,9 @@ export function Dashboard({ send }: DashboardProps) {
             />
             <div className="grid gap-2">
               <span className="font-semibold text-slate-600 dark:text-white/72">Voice</span>
-              {/* UI-only for now: remembers the preference; the engine will consume
-                  it once TTS voice selection is implemented. */}
-              <ChipGroup value={voiceGender} options={voiceOptions} onChange={setVoiceGender} />
+              <ChipGroup value={effectiveVoiceGender} options={voiceOptions} onChange={handleVoiceChange} />
               <p className="text-[11px] font-normal text-slate-500 dark:text-white/45">
-                Male/female voice — engine support coming soon.
+                Changes the spoken voice on the next response — no restart needed.
               </p>
             </div>
           </Section>

@@ -308,6 +308,15 @@ class JarvisBridge:
                 from core.persona import persona_manager
 
                 persona_manager.set_profile(str(value or ""))
+            elif key == "JARVIS_TTS_VOICE_PROFILE":
+                from audio.tts import speech_engine
+
+                profile_name = str(value or "").strip()
+                if speech_engine.set_voice_profile(profile_name):
+                    logger.info("TTS voice profile set to '%s' via dashboard", profile_name)
+                else:
+                    logger.info("UI bridge setting_update ignored (unknown voice profile): %s", value)
+                    return f"Unknown voice profile: {profile_name}"
             else:
                 logger.info("UI bridge setting_update ignored (unknown key): %s", key)
         except Exception:
@@ -371,6 +380,13 @@ class JarvisBridge:
         except Exception:
             pin_set = False
 
+        try:
+            from audio.tts import speech_engine
+
+            voice_profile = speech_engine.get_voice_profile_name()
+        except Exception:
+            voice_profile = ""
+
         values = {
             "model": model,
             "model_tier": "auto" if bool(getattr(config, "LLM_AUTO_SELECT_MODEL", False)) else "configured",
@@ -380,6 +396,7 @@ class JarvisBridge:
             "stt_language_hint": stt_language_hint,
             "tts_backend": getattr(config, "TTS_DEFAULT_BACKEND", ""),
             "persona": persona,
+            "voice_profile": voice_profile,
             "pin_set": pin_set,
         }
         return make_event(EVENT_CONFIG, values=values)

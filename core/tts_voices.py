@@ -102,15 +102,31 @@ def _read_deprecated_alias(new_key: str, old_env_key: str) -> str | None:
     return value
 
 
+# Runtime override so the dashboard can switch the active voice profile
+# without a restart. set_active_voice_profile() validates against the known
+# profile registry; get_active_voice_profile() prefers it over the env var.
+_RUNTIME_VOICE_PROFILE: str | None = None
+
+
+def set_active_voice_profile(name: str) -> bool:
+    global _RUNTIME_VOICE_PROFILE
+    key = str(name or "").strip().lower()
+    if key not in DEFAULT_PROFILES and key != "custom":
+        return False
+    _RUNTIME_VOICE_PROFILE = key
+    return True
+
+
 def get_active_voice_profile() -> VoiceProfile:
-    """Resolve the active voice profile from env config.
+    """Resolve the active voice profile from runtime override or env config.
 
     Priority:
-      1. Per-field overrides from JARVIS_TTS_* env vars (always applied on top).
-      2. Built-in profile selected by JARVIS_TTS_VOICE_PROFILE.
-      3. Deprecated legacy env vars (alias bridge, with warning).
+      1. Runtime override set via set_active_voice_profile() (dashboard).
+      2. Per-field overrides from JARVIS_TTS_* env vars (always applied on top).
+      3. Built-in profile selected by JARVIS_TTS_VOICE_PROFILE.
+      4. Deprecated legacy env vars (alias bridge, with warning).
     """
-    profile_name = (
+    profile_name = _RUNTIME_VOICE_PROFILE or (
         os.environ.get("JARVIS_TTS_VOICE_PROFILE", "jarvis_male_classic")
         .strip()
         .lower()

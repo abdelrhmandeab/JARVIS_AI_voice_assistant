@@ -21,6 +21,7 @@ export interface ConfigValues {
   tts_backend: string;
   persona: string;
   pin_set?: boolean;
+  voice_profile?: string;
 }
 
 // Engine -> UI events (discriminated union on "type" field)

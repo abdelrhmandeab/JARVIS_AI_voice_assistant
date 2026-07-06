@@ -554,6 +554,24 @@ class SpeechEngine:
         self._voice: VoiceProfile = get_active_voice_profile()
         logger.info(format_voice_profile_summary(self._voice))
 
+    def get_voice_profile_name(self) -> str:
+        return self._voice.name
+
+    def set_voice_profile(self, profile_name: str) -> bool:
+        """Switch the active TTS voice profile at runtime (dashboard-driven).
+
+        self._voice is cached at init and read by every synthesis call site,
+        so a profile switch must replace it here to take effect on the next
+        spoken response instead of requiring a restart.
+        """
+        from core.tts_voices import set_active_voice_profile
+
+        if not set_active_voice_profile(profile_name):
+            return False
+        self._voice = get_active_voice_profile()
+        logger.info(format_voice_profile_summary(self._voice))
+        return True
+
     def _normalize_backend(self, backend):
         raw = str(backend or "auto").strip().lower()
         aliases = {
