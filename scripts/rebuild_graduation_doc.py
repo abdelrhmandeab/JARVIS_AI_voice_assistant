@@ -2951,7 +2951,7 @@ def add_phase1_content(document: Document) -> None:
         ("JARVIS_UI_BRIDGE_PORT", defaults.get("JARVIS_UI_BRIDGE_PORT", "9720"), "Local WebSocket bridge port."),
         ("JARVIS_MAX_RECORD_DURATION", defaults.get("JARVIS_MAX_RECORD_DURATION", "8.0"), "Maximum command recording window."),
         ("JARVIS_WAKE_WORD_UNIFIED_ONNX_PATH", defaults.get("JARVIS_WAKE_WORD_UNIFIED_ONNX_PATH", "'models/jarvis_unified/jarvis_unified.onnx'"), "Bilingual wake-word model path."),
-        ("JARVIS_STT_BACKEND", defaults.get("JARVIS_STT_BACKEND", "'hybrid_elevenlabs'"), "Primary STT strategy."),
+        ("JARVIS_STT_BACKEND", defaults.get("JARVIS_STT_BACKEND", "'elevenlabs_scribe'"), "Primary STT strategy."),
         ("JARVIS_LLM_BACKEND", defaults.get("JARVIS_LLM_BACKEND", "'ollama'"), "LLM backend selection."),
         ("JARVIS_LLM_MODEL", defaults.get("JARVIS_LLM_MODEL", "'qwen3:4b'"), "Pinned/default local model before hardware auto-selection."),
         ("JARVIS_SEMANTIC_MIN_MARGIN", defaults.get("JARVIS_SEMANTIC_MIN_MARGIN", "0.08"), "Semantic router near-tie guard."),

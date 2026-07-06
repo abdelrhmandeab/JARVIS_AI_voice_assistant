@@ -2,6 +2,8 @@ export type DialogueState = 'idle' | 'listening' | 'processing' | 'responding' |
 
 export type Language = 'en' | 'ar';
 
+export type SttLanguageHint = 'en' | 'ar' | 'auto';
+
 export interface FeatureFlags {
   NUMERIC_PARSING_ENABLED: boolean;
   AUTO_APP_DISCOVERY_ENABLED: boolean;
@@ -15,6 +17,7 @@ export interface ConfigValues {
   wake_mode: string;
   feature_flags: FeatureFlags;
   stt_backend: string;
+  stt_language_hint?: SttLanguageHint;
   tts_backend: string;
   persona: string;
 }

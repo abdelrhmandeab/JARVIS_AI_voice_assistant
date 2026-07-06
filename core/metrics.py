@@ -873,7 +873,7 @@ class LatencyTracker:
         "stt_partial_latency": 3.0,
         "stt_total": 1.0,
         "stt_lang_pick": 0.25,
-        "stt_cloud_call": 0.8,
+        "stt_scribe_call": 0.8,
         "stt_local_call": 1.2,
         "stt_validate": 0.02,
         "stt_retry": 1.5,

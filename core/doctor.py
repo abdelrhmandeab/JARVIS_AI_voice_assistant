@@ -142,9 +142,11 @@ def collect_diagnostics(*, include_model_load_checks=False):
             }
         )
 
+    from audio.stt import _normalize_backend_name as _normalize_stt_backend_name
+
     elevenlabs_key_configured = bool(str(ELEVENLABS_API_KEY or "").strip())
     elevenlabs_required = bool(
-        str(STT_BACKEND or "").strip().lower() == "hybrid_elevenlabs"
+        _normalize_stt_backend_name(STT_BACKEND) == "elevenlabs_scribe"
         or (
             str(TTS_DEFAULT_BACKEND or "").strip().lower() == "hybrid"
             and bool(TTS_ELEVENLABS_ARABIC_ENABLED)
@@ -227,7 +229,7 @@ def collect_diagnostics(*, include_model_load_checks=False):
 
         latency_report = latency_tracker.report()
         local_p95 = float((latency_report.get("stt_local_call") or {}).get("p95_ms") or 0.0)
-        cloud_p95 = float((latency_report.get("stt_cloud_call") or {}).get("p95_ms") or 0.0)
+        cloud_p95 = float((latency_report.get("stt_scribe_call") or {}).get("p95_ms") or 0.0)
         pick_p95 = float((latency_report.get("stt_lang_pick") or {}).get("p95_ms") or 0.0)
         recent = stt_runtime.get_recent_transcription_meta()
         invalid_count = sum(

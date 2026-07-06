@@ -1858,6 +1858,7 @@ def run():
             def _pipeline_amplitude(level):
                 ui_bridge.broadcast(make_event(EVENT_AMPLITUDE, level=level))
 
+            _use_whisper_partials = str(_turn_language_hint).strip().lower() == "en"
             with stage_timer("recording", source=wake_source or "unknown") as recording_timing:
                 capture = record_utterance_streaming(
                     filename=audio_file,
@@ -1869,8 +1870,8 @@ def run():
                         if wake_source == "follow_up"
                         else None
                     ),
-                    enable_partials=True,
-                    on_partial=_pipeline_partial,
+                    enable_partials=_use_whisper_partials,
+                    on_partial=_pipeline_partial if _use_whisper_partials else None,
                     on_amplitude=_pipeline_amplitude,
                 )
             metrics.record_stage(

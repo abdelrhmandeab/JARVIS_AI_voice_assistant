@@ -8,7 +8,6 @@ import math
 import sys
 from array import array
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -18,7 +17,8 @@ from core.config import (
     ELEVENLABS_API_KEY,
     ELEVENLABS_BASE_URL,
     STT_BACKEND,
-    STT_CLOUD_RACE_LANGUAGES,
+    STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL,
+    STT_ENGLISH_ENGINE,
     STT_ELEVENLABS_CONNECT_TIMEOUT_SECONDS,
     STT_ELEVENLABS_COOLDOWN_SECONDS,
     STT_ELEVENLABS_ENABLED,
@@ -35,9 +35,6 @@ from core.config import (
     STT_FORBID_OTHER_LANGUAGES,
     STT_LANGUAGE_HINT,
     STT_LANGUAGE_LOCK,
-    STT_LOCAL_RACE_ENABLED,
-    STT_LOCAL_RACE_MIN_ADVANTAGE,
-    STT_LOCAL_RACE_ON_CLOUD_COOLDOWN,
     STT_MAX_AUDIO_SECONDS,
     STT_MIN_AUDIO_RMS,
     STT_MIN_CONFIDENCE,
@@ -58,14 +55,20 @@ from utils.language_detector import detect_language
 
 _LOCAL_BACKEND = "faster_whisper"
 _HYBRID_BACKEND = "hybrid_elevenlabs"
+_SCRIBE_BACKEND = "elevenlabs_scribe"          # canonical primary backend
 _ELEVENLABS_METHOD = "elevenlabs_stt"
 
 _BACKEND_ALIASES = {
-    _HYBRID_BACKEND: _HYBRID_BACKEND,
-    "hybrid": _HYBRID_BACKEND,
-    "elevenlabs": _HYBRID_BACKEND,
-    "elevenlabs_stt": _HYBRID_BACKEND,
-    "elevenlabs_hybrid": _HYBRID_BACKEND,
+    # Legacy hybrid-cascade names are accepted as input but resolve onto the
+    # clean Scribe v2 path — the cascade itself was retired in Phase 5.
+    _HYBRID_BACKEND: _SCRIBE_BACKEND,
+    "hybrid": _SCRIBE_BACKEND,
+    "elevenlabs": _SCRIBE_BACKEND,
+    "elevenlabs_stt": _SCRIBE_BACKEND,
+    "elevenlabs_hybrid": _SCRIBE_BACKEND,
+    _SCRIBE_BACKEND: _SCRIBE_BACKEND,
+    "scribe": _SCRIBE_BACKEND,
+    "scribe_v2": _SCRIBE_BACKEND,
     _LOCAL_BACKEND: _LOCAL_BACKEND,
     "whisper": _LOCAL_BACKEND,
     "local": _LOCAL_BACKEND,
@@ -128,7 +131,7 @@ def close_cloud_http_client() -> None:
 
 def _normalize_backend_name(name: str) -> str:
     raw = str(name or "").strip().lower()
-    return _BACKEND_ALIASES.get(raw, _HYBRID_BACKEND)
+    return _BACKEND_ALIASES.get(raw, _SCRIBE_BACKEND)
 
 
 _RUNTIME_STT_BACKEND = _normalize_backend_name(STT_BACKEND)
@@ -392,34 +395,6 @@ def _below_confidence_floor(text: str, confidence: Optional[float]) -> bool:
     return float(confidence) < float(STT_MIN_CONFIDENCE)
 
 
-def _score_transcript_routability(text: str, language: str) -> float:
-    """Dry-run score for how confidently `text` routes to a real command.
-
-    Same-script, same-language word-substitution errors (e.g. Arabic "دور"
-    misheard as Arabic "ضغط") pass script/language validation cleanly but
-    parse to a different, wrong intent — this catches that class of error by
-    parsing (never executing) both STT candidates and preferring whichever
-    one the router finds more confidently actionable. LLM_QUERY / ambiguous
-    parses score low since they carry no real command-routing signal.
-    """
-    normalized = str(text or "").strip()
-    if not normalized:
-        return 0.0
-    try:
-        from core.command_parser import parse_command
-        from core.intent_confidence import assess_intent_confidence
-
-        parsed = parse_command(normalized)
-        if str(getattr(parsed, "intent", "") or "").strip().upper() == "LLM_QUERY":
-            return 0.0
-        assessment = assess_intent_confidence(normalized, parsed, language=language or "ar")
-        if bool(getattr(assessment, "should_clarify", False)):
-            return 0.0
-        return float(getattr(assessment, "confidence", 0.0) or 0.0)
-    except Exception:
-        return 0.0
-
-
 def _finalize_stt_result(result: Dict[str, Any]) -> Dict[str, Any]:
     global _LAST_TRANSCRIPTION_META
     finalized = dict(result or {})
@@ -438,7 +413,7 @@ def _finalize_stt_result(result: Dict[str, Any]) -> Dict[str, Any]:
         status = "error"
 
     call_seconds = max(
-        get_thread_stage_timing("stt_cloud_call"),
+        get_thread_stage_timing("stt_scribe_call"),
         get_thread_stage_timing("stt_local_call"),
     )
     pick_seconds = float(finalized.get("lang_pick_seconds") or get_thread_stage_timing("stt_lang_pick"))
@@ -728,9 +703,17 @@ def preload_critical_model() -> Dict[str, Any]:
     backend = get_runtime_stt_backend()
     local_loaded = bool(_LOCAL_MODEL)
 
-    if backend in {_LOCAL_BACKEND, _HYBRID_BACKEND}:
-        _get_local_whisper_model()
-        local_loaded = True
+    # Only warm whisper eagerly when the current turn could actually use it:
+    # explicit faster_whisper backend, or an English language hint (which
+    # routes to whisper per STT_ENGLISH_ENGINE). Otherwise it lazy-loads on
+    # first English turn instead of costing startup time on a Scribe-only session.
+    should_preload_local = backend == _LOCAL_BACKEND or _runtime_language_hint() == "en"
+    if should_preload_local:
+        try:
+            _get_local_whisper_model()
+            local_loaded = True
+        except Exception as exc:
+            logger.debug("Local whisper preload skipped: %s", exc)
 
     return {
         "backend": backend,
@@ -963,22 +946,35 @@ def transcribe_partial_with_meta(
     )
 
 
-def _transcribe_with_elevenlabs(
+def _scribe_language_code(language_hint: str) -> Optional[str]:
+    """Return the ElevenLabs language_code to send, or None to auto-detect.
+
+    Sending no code lets Scribe v2 auto-detect and transcribe mixed EN/AR in
+    one file — the behavior we want for auto/mixed. For an explicit Arabic
+    selection we may pin 'ara' depending on config.
+    """
+    mode = str(STT_ELEVENLABS_SEND_LANGUAGE_CODE or "auto").strip().lower()
+    hint = _normalize_detected_language(language_hint or "")
+    if mode == "never":
+        return None
+    if mode == "always":
+        return "ara" if hint == "ar" else "eng"
+    # mode == "auto": pin only for an explicit Arabic request; auto-detect otherwise
+    return "ara" if hint == "ar" else None
+
+
+def _transcribe_scribe_v2(
     audio_file: str,
-    locked_lang: str,
+    language_hint: str = "auto",
     on_partial: Optional[Callable[[str], None]] = None,
-    *,
-    streaming_text: str = "",
 ) -> Dict[str, Any]:
+    """Single, direct Scribe v2 (batch) call. No cascade."""
     if is_shutdown_requested():
         raise RuntimeError("STT shutdown requested")
-
     if not bool(STT_ELEVENLABS_ENABLED):
         raise RuntimeError("ElevenLabs STT is disabled")
-
     if _elevenlabs_on_cooldown():
         raise RuntimeError("ElevenLabs STT cooldown active")
-
     api_key = str(ELEVENLABS_API_KEY or "").strip()
     if not api_key:
         raise RuntimeError("ELEVENLABS_API_KEY is not configured")
@@ -986,28 +982,23 @@ def _transcribe_with_elevenlabs(
     path = Path(audio_file)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"Audio file not found: {audio_file}")
-
     duration_seconds = _audio_duration_seconds(str(path))
     if duration_seconds > float(STT_MAX_AUDIO_SECONDS):
         raise RuntimeError(
             f"Audio duration {duration_seconds:.2f}s exceeds cloud STT cap {float(STT_MAX_AUDIO_SECONDS):.2f}s"
         )
 
-    language = "ar" if _normalize_detected_language(locked_lang) == "ar" else "en"
-
     endpoint = f"{str(ELEVENLABS_BASE_URL or 'https://api.elevenlabs.io').rstrip('/')}/v1/speech-to-text"
     data = {
-        "model_id": str(STT_ELEVENLABS_STT_MODEL or "scribe_v1"),
+        "model_id": str(STT_ELEVENLABS_STT_MODEL or "scribe_v2"),
         "tag_audio_events": "false",
         "diarize": "false",
     }
-    # Forcing a single language_code on already-mixed EN/AR speech biases
-    # Scribe toward one script and drives it to hallucinate/transliterate the
-    # other — omit it so Scribe v2 auto-detects the code-switch instead.
-    if str(STT_ELEVENLABS_SEND_LANGUAGE_CODE).lower() == "always" or not _looks_mixed(streaming_text):
-        data["language_code"] = "ara" if language == "ar" else "eng"
+    lang_code = _scribe_language_code(language_hint)
+    if lang_code:
+        data["language_code"] = lang_code
 
-    with stage_timer("stt_cloud_call", lang=language):
+    with stage_timer("stt_scribe_call", lang=language_hint or "auto"):
         with path.open("rb") as audio_handle:
             response = get_cloud_http_client().post(
                 endpoint,
@@ -1017,43 +1008,28 @@ def _transcribe_with_elevenlabs(
             )
 
     if response.status_code >= 400:
-        error_preview = (response.text or "").strip().replace("\n", " ")
-        if len(error_preview) > 220:
-            error_preview = error_preview[:217] + "..."
+        error_preview = (response.text or "").strip().replace("\n", " ")[:220]
         if response.status_code in {401, 429} or "quota_exceeded" in error_preview:
             _set_elevenlabs_cooldown(f"http_{response.status_code}: {error_preview}")
-        raise RuntimeError(f"ElevenLabs STT HTTP {response.status_code}: {error_preview}")
+        raise RuntimeError(f"ElevenLabs Scribe HTTP {response.status_code}: {error_preview}")
 
     payload = response.json() if response.content else {}
-    text = str(
-        payload.get("text")
-        or payload.get("transcript")
-        or payload.get("result")
-        or ""
-    ).strip()
-
-    confidence_raw = payload.get("confidence")
-    if not isinstance(confidence_raw, (float, int)):
-        confidence_raw = payload.get("average_confidence")
-    # ElevenLabs' scribe API does not actually return a top-level confidence
-    # field today — leave this None (unknown) rather than fabricating 0.0,
-    # which would make every ElevenLabs transcript look like a zero-confidence
-    # hallucination to the confidence-floor check downstream.
-    confidence_value = float(confidence_raw) if isinstance(confidence_raw, (float, int)) else None
-
-    detected_language = _normalize_detected_language(
-        str(payload.get("language_code") or payload.get("language") or language or "")
+    text = str(payload.get("text") or payload.get("transcript") or payload.get("result") or "").strip()
+    if text and _normalize_detected_language(detect_language(text)) == "ar":
+        text = normalize_arabic_post_transcript(text)
+    detected = _normalize_detected_language(
+        str(payload.get("language_code") or payload.get("language") or "")
     )
-    if not detected_language and text:
-        detected_language = _normalize_detected_language(detect_language(text))
+    if not detected and text:
+        detected = _normalize_detected_language(detect_language(text))
 
     _safe_partial_emit(on_partial, text)
     return {
         "text": text,
-        "confidence": confidence_value,
-        "language": language if detected_language not in {"ar", "en"} else detected_language,
-        "backend": _HYBRID_BACKEND,
-        "method": _ELEVENLABS_METHOD,
+        "confidence": float(payload.get("confidence") or payload.get("average_confidence") or 0.0),
+        "language": detected or _normalize_detected_language(language_hint) or "",
+        "backend": _SCRIBE_BACKEND,
+        "method": "scribe_v2",
         "fallback_used": False,
         "audio_duration": duration_seconds,
         "audio_rms": _audio_rms(str(path)),
@@ -1127,316 +1103,6 @@ def _validated_backend_result(
     if validation_ok:
         return result
     return None
-
-
-def _race_elevenlabs_languages(
-    audio_file: str,
-    *,
-    on_partial: Optional[Callable[[str], None]] = None,
-) -> tuple[Optional[Dict[str, Any]], List[str]]:
-    errors: List[str] = []
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt-cloud-race") as executor:
-        future_to_lang = {
-            executor.submit(_transcribe_with_elevenlabs, audio_file, locked_lang=lang, on_partial=on_partial): lang
-            for lang in ("ar", "en")
-        }
-        for future in as_completed(future_to_lang):
-            lang = future_to_lang[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                errors.append(f"elevenlabs:{lang}:{exc}")
-                continue
-            validated = _validated_backend_result(
-                result,
-                locked_lang=lang,
-                backend=_HYBRID_BACKEND,
-                method=_ELEVENLABS_METHOD,
-            )
-            if validated is not None:
-                validated["cloud_race_used"] = True
-                for pending in future_to_lang:
-                    if pending is not future:
-                        pending.cancel()
-                return validated, errors
-            errors.append(f"elevenlabs:{lang}:invalid_language")
-    return None, errors
-
-
-def _transcribe_with_hybrid_elevenlabs(
-    audio_file: str,
-    language_hint: Optional[str] = None,
-    on_partial: Optional[Callable[[str], None]] = None,
-    *,
-    streaming_text: str = "",
-) -> Dict[str, Any]:
-    if is_shutdown_requested():
-        return _shutdown_result(backend=_HYBRID_BACKEND, method=_HYBRID_BACKEND)
-
-    duration_seconds = _audio_duration_seconds(audio_file)
-    rms = _audio_rms(audio_file)
-    if rms < float(STT_MIN_AUDIO_RMS):
-        result = _silence_result(locked_lang="", rms=rms, duration_seconds=duration_seconds)
-        result["backend"] = _HYBRID_BACKEND
-        result["method"] = _LOCAL_BACKEND
-        return result
-
-    locked_lang = _pick_locked_language(
-        audio_file,
-        streaming_text=streaming_text,
-        language_hint=language_hint or _runtime_language_hint(),
-        probe_model=_get_partial_whisper_model(),
-        allow_ambiguous=bool(STT_CLOUD_RACE_LANGUAGES),
-    )
-    if is_shutdown_requested():
-        return _shutdown_result(backend=_HYBRID_BACKEND, method=_HYBRID_BACKEND)
-
-    errors: List[str] = []
-    cloud_allowed = duration_seconds <= float(STT_MAX_AUDIO_SECONDS)
-    cloud_lang = locked_lang
-    local_lang = locked_lang if locked_lang in {"ar", "en"} else "en"
-    # Best cloud result that had text but failed the strict dominance gate.
-    # Used as a last-resort fallback rather than discarding a correct mixed
-    # transcript in favour of forced-lock local Whisper (which hallucinates).
-    best_cloud_mixed: Optional[Dict[str, Any]] = None
-
-    # Kick off local Whisper (Egyptian-colloquial-biased prompt) concurrently
-    # with the cloud call so a same-language, same-script word-substitution
-    # error from ElevenLabs (e.g. "دور" misheard as "ضغط") can be caught by
-    # comparing routability rather than only language/script validation.
-    local_race_future = None
-    local_race_executor = None
-    # Race local Whisper unconditionally only when explicitly enabled; otherwise
-    # only race while cloud is unhealthy (on cooldown) — the local fallback is
-    # already about to run in that state, so the race is nearly free there.
-    should_local_race = bool(STT_LOCAL_RACE_ENABLED) or (
-        bool(STT_LOCAL_RACE_ON_CLOUD_COOLDOWN) and _elevenlabs_on_cooldown()
-    )
-    if (
-        should_local_race
-        and bool(STT_ELEVENLABS_ENABLED)
-        and cloud_allowed
-        and cloud_lang in {"ar", "en"}
-    ):
-        local_race_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-local-race")
-        local_race_future = local_race_executor.submit(
-            _transcribe_with_faster_whisper,
-            audio_file,
-            language_hint=language_hint,
-            locked_lang=local_lang,
-        )
-
-    _local_race_resolved = False
-    _local_race_result: Optional[Dict[str, Any]] = None
-
-    def _resolve_local_race() -> Optional[Dict[str, Any]]:
-        nonlocal _local_race_resolved, _local_race_result
-        if _local_race_resolved:
-            return _local_race_result
-        _local_race_resolved = True
-        if local_race_future is None:
-            return None
-        try:
-            _local_race_result = local_race_future.result(timeout=max(0.1, float(STT_MAX_AUDIO_SECONDS)))
-        except Exception:
-            _local_race_result = None
-        finally:
-            if local_race_executor is not None:
-                local_race_executor.shutdown(wait=False)
-        return _local_race_result
-
-    if bool(STT_ELEVENLABS_ENABLED) and cloud_allowed:
-        try:
-            if cloud_lang == "ambiguous" and bool(STT_CLOUD_RACE_LANGUAGES):
-                raced, race_errors = _race_elevenlabs_languages(audio_file, on_partial=on_partial)
-                errors.extend(race_errors)
-                if raced is not None:
-                    return raced
-            elif cloud_lang in {"ar", "en"}:
-                primary = _transcribe_with_elevenlabs(
-                    audio_file,
-                    locked_lang=cloud_lang,
-                    on_partial=on_partial,
-                    streaming_text=streaming_text,
-                )
-                validated = _validated_backend_result(
-                    primary,
-                    locked_lang=cloud_lang,
-                    backend=_HYBRID_BACKEND,
-                    method=_ELEVENLABS_METHOD,
-                )
-                if validated is not None:
-                    local_candidate = _resolve_local_race()
-                    local_validated = (
-                        _validated_backend_result(
-                            local_candidate,
-                            locked_lang=local_lang,
-                            backend=_HYBRID_BACKEND,
-                            method=_LOCAL_BACKEND,
-                        )
-                        if local_candidate is not None
-                        else None
-                    )
-                    if local_validated is not None:
-                        cloud_text = str(validated.get("text", "") or "").strip()
-                        local_text = str(local_validated.get("text", "") or "").strip()
-                        if local_text and local_text != cloud_text:
-                            cloud_score = _score_transcript_routability(cloud_text, cloud_lang)
-                            local_score = _score_transcript_routability(local_text, local_lang)
-                            if local_score - cloud_score >= float(STT_LOCAL_RACE_MIN_ADVANTAGE):
-                                logger.info(
-                                    "stt_local_race_preferred cloud=%.2f local=%.2f cloud_text=%r local_text=%r",
-                                    cloud_score, local_score, cloud_text, local_text,
-                                )
-                                local_validated["local_race_preferred"] = True
-                                return local_validated
-                    return validated
-                errors.append("elevenlabs:invalid_language")
-                primary_text = str(primary.get("text", "") or "").strip()
-                if primary_text:
-                    logger.warning("ElevenLabs STT returned invalid-language text; trying recovery")
-                    # Keep as mixed-language candidate in case local also fails.
-                    counts = _language_counts(primary_text)
-                    if counts["arabic"] > 0 and counts["latin"] > 0:
-                        primary["backend"] = _HYBRID_BACKEND
-                        primary["method"] = _ELEVENLABS_METHOD
-                        primary["validation_ok"] = True
-                        primary["language"] = cloud_lang
-                        best_cloud_mixed = primary
-                else:
-                    logger.debug("ElevenLabs STT returned empty transcript; skipping opposite-language cloud retry")
-                # Mixed EN/AR is valid by definition here — retrying with the
-                # opposite language lock is pure wasted latency when the
-                # primary transcript was already code-switched.
-                if (
-                    bool(STT_RETRY_OPPOSITE_LANGUAGE)
-                    and primary_text
-                    and not _looks_mixed(primary_text)
-                    and not is_shutdown_requested()
-                ):
-                    retry_lang = _opposite_language(cloud_lang)
-                    with stage_timer("stt_retry", lang=retry_lang):
-                        retry = _transcribe_with_elevenlabs(
-                            audio_file,
-                            locked_lang=retry_lang,
-                            on_partial=on_partial,
-                            streaming_text=streaming_text,
-                        )
-                    retry_validated = _validated_backend_result(
-                        retry,
-                        locked_lang=retry_lang,
-                        backend=_HYBRID_BACKEND,
-                        method=_ELEVENLABS_METHOD,
-                    )
-                    if retry_validated is not None:
-                        retry_validated["retry_used"] = True
-                        return retry_validated
-                    errors.append("elevenlabs:retry_invalid_language")
-                    # Also check retry as a mixed-language candidate.
-                    retry_text = str(retry.get("text", "") or "").strip()
-                    if retry_text and best_cloud_mixed is None:
-                        retry_counts = _language_counts(retry_text)
-                        if retry_counts["arabic"] > 0 and retry_counts["latin"] > 0:
-                            retry["backend"] = _HYBRID_BACKEND
-                            retry["method"] = _ELEVENLABS_METHOD
-                            retry["validation_ok"] = True
-                            retry["language"] = retry_lang
-                            best_cloud_mixed = retry
-        except Exception as exc:
-            errors.append(f"elevenlabs:{exc}")
-            if "quota_exceeded" in str(exc) or "http 401" in str(exc).lower():
-                _set_elevenlabs_cooldown(f"exception:{exc}")
-            logger.warning("ElevenLabs STT failed: %s", exc)
-    elif bool(STT_ELEVENLABS_ENABLED) and not cloud_allowed:
-        errors.append(f"elevenlabs:audio_too_long:{duration_seconds:.2f}s")
-        logger.info(
-            "Skipping ElevenLabs STT for %.2fs audio over %.2fs cap",
-            duration_seconds,
-            float(STT_MAX_AUDIO_SECONDS),
-        )
-
-    local = _resolve_local_race()
-    if local is None:
-        local = _transcribe_with_faster_whisper(
-            audio_file,
-            language_hint=language_hint,
-            on_partial=on_partial,
-            locked_lang=local_lang,
-        )
-    if "stt:silence" in list(local.get("errors") or []):
-        local["backend"] = _HYBRID_BACKEND
-        local["method"] = _LOCAL_BACKEND
-        if errors:
-            local["fallback_used"] = True
-            local["errors"] = list(errors) + list(local.get("errors") or [])
-        return local
-    local_text = str(local.get("text", "")).strip()
-    validated_local = _validated_backend_result(
-        local,
-        locked_lang=local_lang,
-        backend=_HYBRID_BACKEND,
-        method=_LOCAL_BACKEND,
-    )
-    if validated_local is not None:
-        if errors:
-            validated_local["fallback_used"] = True
-            validated_local["errors"] = errors
-        return validated_local
-
-    if local_text:
-        logger.warning("Local STT returned invalid-language text (text_len=%d); trying recovery", len(local_text))
-    else:
-        logger.debug("Local STT returned empty transcript; skipping opposite-language retry")
-    errors.append("local:invalid_language")
-    if (
-        bool(STT_RETRY_OPPOSITE_LANGUAGE)
-        and local_text
-        and not _looks_mixed(local_text)
-        and not is_shutdown_requested()
-    ):
-        retry_lang = _opposite_language(local_lang)
-        with stage_timer("stt_retry", lang=retry_lang):
-            retry = _transcribe_with_faster_whisper(
-                audio_file,
-                language_hint=language_hint,
-                on_partial=on_partial,
-                locked_lang=retry_lang,
-            )
-        retry_validated = _validated_backend_result(
-            retry,
-            locked_lang=retry_lang,
-            backend=_HYBRID_BACKEND,
-            method=_LOCAL_BACKEND,
-        )
-        if retry_validated is not None:
-            retry_validated["fallback_used"] = True
-            retry_validated["retry_used"] = True
-            retry_validated["errors"] = errors
-            return retry_validated
-        errors.append("local:retry_invalid_language")
-
-    # All local paths failed. If the cloud returned a mixed-language transcript
-    # that only failed the strict dominance gate, use it — it is almost certainly
-    # more accurate than any forced-lock local Whisper output on mixed audio.
-    if best_cloud_mixed is not None:
-        logger.info(
-            "All strict-validation paths failed; using best cloud mixed-language candidate "
-            "(len=%d lang=%s)",
-            len(str(best_cloud_mixed.get("text", "") or "")),
-            best_cloud_mixed.get("language", "?"),
-        )
-        best_cloud_mixed["fallback_used"] = True
-        best_cloud_mixed["errors"] = errors
-        return best_cloud_mixed
-
-    return _invalid_language_result(
-        backend=_HYBRID_BACKEND,
-        method=_LOCAL_BACKEND,
-        locked_lang=local_lang,
-        errors=errors,
-        audio_duration=duration_seconds,
-        audio_rms=rms,
-    )
 
 
 def transcribe_backend_direct_with_meta(
@@ -1527,11 +1193,10 @@ def transcribe_backend_direct_with_meta(
                     audio_rms=float(result.get("audio_rms") or 0.0),
                 )
     else:
-        result = _transcribe_with_hybrid_elevenlabs(
+        result = _transcribe_scribe_v2(
             audio_file,
-            language_hint=language_hint,
+            language_hint=language_hint or _runtime_language_hint(),
             on_partial=on_partial,
-            streaming_text=streaming_text,
         )
 
     latency_ms = (time.perf_counter() - start) * 1000.0
@@ -1547,11 +1212,18 @@ def transcribe_streaming_with_meta(
     streaming_text: str = "",
     whisper_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    preferred_backend = get_runtime_stt_backend()
+    hint = str(language_hint or _runtime_language_hint() or "auto").strip().lower()
+    if hint == "en" and str(STT_ENGLISH_ENGINE or "faster_whisper").strip().lower() == "faster_whisper":
+        chain = [_LOCAL_BACKEND]                    # English -> whisper only
+    else:
+        chain = [_SCRIBE_BACKEND]                   # auto/ar -> Scribe v2
+        if bool(STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL):
+            chain.append(_LOCAL_BACKEND)            # safety net on cloud failure
+    preferred_backend = chain[0]
     attempted: List[str] = []
     errors: List[str] = []
 
-    for backend in [preferred_backend, _LOCAL_BACKEND]:
+    for backend in chain:
         if is_shutdown_requested():
             failed = _shutdown_result(backend=preferred_backend, method=preferred_backend)
             failed["errors"] = list(errors) + list(failed.get("errors") or [])

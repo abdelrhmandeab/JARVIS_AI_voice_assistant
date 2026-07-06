@@ -198,10 +198,18 @@ WAKE_WORD_DEPRECATED_KEYS = tuple(
 # STT
 STT_BACKEND = _env(
     "JARVIS_STT_BACKEND",
-    "hybrid_elevenlabs",
-)  # hybrid_elevenlabs | faster_whisper
-if STT_BACKEND not in {"hybrid_elevenlabs", "faster_whisper"}:
-    STT_BACKEND = "hybrid_elevenlabs"
+    "elevenlabs_scribe",
+)  # elevenlabs_scribe | hybrid_elevenlabs (legacy alias) | faster_whisper
+if STT_BACKEND not in {"elevenlabs_scribe", "hybrid_elevenlabs", "faster_whisper"}:
+    STT_BACKEND = "elevenlabs_scribe"
+
+# Which engine handles realtime STT per language. English uses local whisper
+# so it works offline / without cloud cost; auto+arabic use ElevenLabs Scribe v2.
+STT_ENGLISH_ENGINE = _env("JARVIS_STT_ENGLISH_ENGINE", "faster_whisper").strip() or "faster_whisper"
+# When the Scribe cloud call fails (network/quota) on a non-English turn,
+# fall back to local whisper so the assistant still responds. Set false for
+# strict Scribe-only behavior.
+STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL = _env_bool("JARVIS_STT_CLOUD_FAILURE_FALLBACK_TO_LOCAL", True)
 
 ELEVENLABS_BASE_URL = _env("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io").strip() or "https://api.elevenlabs.io"
 ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY", "").strip()
@@ -262,29 +270,7 @@ STT_ELEVENLABS_READ_TIMEOUT_SECONDS = max(
 STT_ELEVENLABS_HTTP2 = _env_bool("JARVIS_STT_ELEVENLABS_HTTP2", True)
 STT_ELEVENLABS_COOLDOWN_SECONDS = max(60, _env_int("JARVIS_STT_ELEVENLABS_COOLDOWN_SECONDS", 1800))
 STT_MAX_AUDIO_SECONDS = max(3, _env_int("JARVIS_STT_MAX_AUDIO_SECONDS", 12))
-STT_CLOUD_RACE_LANGUAGES = _env_bool("JARVIS_STT_CLOUD_RACE_LANGUAGES", False)
 STT_ELEVENLABS_WEAK_TEXT_MIN_CHARS = max(2, _env_int("JARVIS_STT_ELEVENLABS_WEAK_TEXT_MIN_CHARS", 5))
-# Run local Whisper concurrently with the ElevenLabs cloud call (rather than
-# only as a fallback when cloud validation fails), and prefer whichever
-# transcript scores as more confidently routable against known command
-# vocabulary. Targets same-language, same-script word-substitution errors
-# (e.g. "دور" heard as "ضغط") that pure language/script validation can't catch.
-# Off by default — running local Whisper on every single utterance doubles
-# CPU load on a weak/no-GPU machine for a benefit (catching same-script
-# word-substitution errors) that's rare relative to the cost. Enable when
-# STT_LOCAL_RACE_ON_CLOUD_COOLDOWN below isn't enough, e.g. to always double-check.
-STT_LOCAL_RACE_ENABLED = _env_bool("JARVIS_STT_LOCAL_RACE_ENABLED", False)
-# Local must beat cloud's routability score by at least this much to be
-# preferred — ties/near-ties keep the generally stronger cloud result.
-STT_LOCAL_RACE_MIN_ADVANTAGE = max(
-    0.0, _env_float("JARVIS_STT_LOCAL_RACE_MIN_ADVANTAGE", 0.15)
-)
-# Race local Whisper even when STT_LOCAL_RACE_ENABLED is off, but only while
-# the cloud backend is on cooldown (recent failures/quota) — the machine
-# already has to fall back to local in that state, so racing costs nothing
-# extra in the common case and buys the routability comparison when cloud
-# health is degraded.
-STT_LOCAL_RACE_ON_CLOUD_COOLDOWN = _env_bool("JARVIS_STT_LOCAL_RACE_ON_CLOUD_COOLDOWN", True)
 
 # Local fallback backend settings.
 WHISPER_MODEL = _env("JARVIS_WHISPER_MODEL", "auto").strip() or "auto"

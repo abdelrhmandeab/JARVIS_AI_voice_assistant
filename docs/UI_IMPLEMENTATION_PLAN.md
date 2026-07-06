@@ -295,7 +295,7 @@ All messages are JSON with a `type` field:
         "MEDIA_DIRECT_DISPATCH_ENABLED": true,
         "SYSTEM_VOLUME_CONTROL": true
     },
-    "stt_backend": "hybrid_elevenlabs",
+    "stt_backend": "elevenlabs_scribe",
     "tts_backend": "hybrid",
     "persona": "friendly"
 }}
