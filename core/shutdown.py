@@ -30,11 +30,9 @@ def perform_shutdown_cleanup():
             return False
         _cleanup_done = True
 
-    # Every cleanup path (SIGINT/SIGTERM, tray Quit/Restart) must also signal
-    # the main orchestrator loop to stop. Without this, the tray's Quit menu
-    # item tore down the job queue/search index/UI bridge/tray but left the
-    # wake-word listening loop running indefinitely — set here so it's
-    # impossible to run cleanup without also requesting shutdown.
+    # Every cleanup path (SIGINT/SIGTERM) must also signal the main
+    # orchestrator loop to stop — set here so it's impossible to run cleanup
+    # without also requesting shutdown.
     _shutdown_event.set()
 
     try:
@@ -51,13 +49,6 @@ def perform_shutdown_cleanup():
         speech_engine.interrupt()
     except Exception as exc:
         logger.warning("Speech engine shutdown cleanup failed: %s", exc)
-
-    try:
-        from ui.tray import stop_tray
-
-        stop_tray()
-    except Exception as exc:
-        logger.debug("Tray shutdown cleanup skipped: %s", exc)
 
     try:
         from ui.bridge import stop_bridge

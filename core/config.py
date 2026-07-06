@@ -245,6 +245,12 @@ STT_PARTIAL_WHISPER_MODEL = _env("JARVIS_STT_PARTIAL_WHISPER_MODEL", "auto").str
 
 STT_ELEVENLABS_ENABLED = _env_bool("JARVIS_STT_ELEVENLABS_ENABLED", True)
 STT_ELEVENLABS_STT_MODEL = _env("JARVIS_STT_ELEVENLABS_MODEL", "scribe_v2").strip() or "scribe_v2"
+# always: force language_code on every ElevenLabs call. auto (default): omit
+# language_code for streaming-text that already looks code-switched, since
+# Scribe v2 auto-detects mixed EN/AR far better than a hard single-language lock.
+STT_ELEVENLABS_SEND_LANGUAGE_CODE = str(
+    _env("JARVIS_STT_ELEVENLABS_SEND_LANGUAGE_CODE", "auto")
+).strip().lower() or "auto"
 STT_ELEVENLABS_CONNECT_TIMEOUT_SECONDS = max(
     0.5,
     _env_float("JARVIS_STT_ELEVENLABS_CONNECT_TIMEOUT_SECONDS", 2.0),
@@ -263,12 +269,22 @@ STT_ELEVENLABS_WEAK_TEXT_MIN_CHARS = max(2, _env_int("JARVIS_STT_ELEVENLABS_WEAK
 # transcript scores as more confidently routable against known command
 # vocabulary. Targets same-language, same-script word-substitution errors
 # (e.g. "دور" heard as "ضغط") that pure language/script validation can't catch.
-STT_LOCAL_RACE_ENABLED = _env_bool("JARVIS_STT_LOCAL_RACE_ENABLED", True)
+# Off by default — running local Whisper on every single utterance doubles
+# CPU load on a weak/no-GPU machine for a benefit (catching same-script
+# word-substitution errors) that's rare relative to the cost. Enable when
+# STT_LOCAL_RACE_ON_CLOUD_COOLDOWN below isn't enough, e.g. to always double-check.
+STT_LOCAL_RACE_ENABLED = _env_bool("JARVIS_STT_LOCAL_RACE_ENABLED", False)
 # Local must beat cloud's routability score by at least this much to be
 # preferred — ties/near-ties keep the generally stronger cloud result.
 STT_LOCAL_RACE_MIN_ADVANTAGE = max(
     0.0, _env_float("JARVIS_STT_LOCAL_RACE_MIN_ADVANTAGE", 0.15)
 )
+# Race local Whisper even when STT_LOCAL_RACE_ENABLED is off, but only while
+# the cloud backend is on cooldown (recent failures/quota) — the machine
+# already has to fall back to local in that state, so racing costs nothing
+# extra in the common case and buys the routability comparison when cloud
+# health is degraded.
+STT_LOCAL_RACE_ON_CLOUD_COOLDOWN = _env_bool("JARVIS_STT_LOCAL_RACE_ON_CLOUD_COOLDOWN", True)
 
 # Local fallback backend settings.
 WHISPER_MODEL = _env("JARVIS_WHISPER_MODEL", "auto").strip() or "auto"
@@ -511,18 +527,6 @@ STARTUP_PARSER_NLP_PREWARM_ENABLED = _env_bool("JARVIS_STARTUP_PARSER_NLP_PREWAR
 STARTUP_BACKGROUND_PREWARM_ENABLED = _env_bool("JARVIS_STARTUP_BACKGROUND_PREWARM_ENABLED", True)
 PREWARM_SEMANTIC_ROUTER_BLOCKING = _env_bool("JARVIS_PREWARM_SEMANTIC_ROUTER_BLOCKING", False)
 PREWARM_LLM_BLOCKING = _env_bool("JARVIS_PREWARM_LLM_BLOCKING", False)
-GREETING_ENABLED = _env_bool("JARVIS_GREETING_ENABLED", True)
-GREETING_LANGUAGE = _env("JARVIS_GREETING_LANGUAGE", "en").strip().lower()
-GREETING_TEXT_EN = _env("JARVIS_GREETING_TEXT_EN", "Jarvis is online and ready.")
-GREETING_TEXT_AR = _env("JARVIS_GREETING_TEXT_AR", "أهلاً بيك، جارفيس جاهز معاك.")
-GREETING_PRESPEAK_SETTLE_MS = max(0, _env_int("JARVIS_GREETING_PRESPEAK_SETTLE_MS", 150))
-GREETING_DEVICE_WARMUP = _env_bool("JARVIS_GREETING_DEVICE_WARMUP", True)
-# When true (default), the greeting blocks until TTS finishes before the wake
-# loop starts listening, so the mic never opens mid-greeting. Disabling this
-# is not recommended — it re-introduces the greeting/wake-loop race the rest
-# of Phase 5 exists to close.
-GREETING_BLOCKING = _env_bool("JARVIS_GREETING_BLOCKING", True)
-LLM_PREWARM_BEFORE_GREETING = _env_bool("JARVIS_LLM_PREWARM_BEFORE_GREETING", True)
 IDENTITY_MODE = _env("JARVIS_IDENTITY_MODE", "pool").strip().lower()
 IDENTITY_AVOID_REPEAT = _env_bool("JARVIS_IDENTITY_AVOID_REPEAT", True)
 IDENTITY_LLM_TEMPERATURE = max(0.0, min(2.0, _env_float("JARVIS_IDENTITY_LLM_TEMPERATURE", 0.9)))

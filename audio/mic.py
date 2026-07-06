@@ -1,4 +1,3 @@
-import math
 import time
 import wave
 from collections import deque
@@ -25,6 +24,12 @@ from core.config import (
     VAD_START_TIMEOUT_SECONDS,
 )
 from audio.vad import SileroVAD
+from audio.vad_timing import (
+    adaptive_silence_seconds as _adaptive_silence_seconds,
+    chunk_rms as _chunk_rms,
+    resolve_silence_seconds as _shared_resolve_silence_seconds,
+    seconds_to_chunks as _shared_seconds_to_chunks,
+)
 
 
 _runtime_vad_settings = {
@@ -75,28 +80,14 @@ def set_runtime_vad_settings(
     return get_runtime_vad_settings()
 
 
-def _resolve_vad_mode(vad_mode):
-    mode = str(vad_mode or "command").strip().lower()
-    if mode in {"chat", "conversation", "dialog", "turn"}:
-        return "chat"
-    return "command"
-
-
 def _resolve_silence_seconds(vad_mode, explicit_silence_seconds=None):
-    if explicit_silence_seconds is not None:
-        return max(0.05, float(explicit_silence_seconds))
-
-    runtime = get_runtime_vad_settings()
-    mode = _resolve_vad_mode(vad_mode)
-    if mode == "chat":
-        return float(runtime.get("chat_silence_seconds") or runtime.get("silence_seconds") or VAD_CHAT_SILENCE_SECONDS)
-    return float(runtime.get("command_silence_seconds") or runtime.get("silence_seconds") or VAD_COMMAND_SILENCE_SECONDS)
-
-
-def _adaptive_silence_seconds(base_seconds, speech_seconds, max_seconds):
-    """Scale silence threshold up with accumulated speech so long utterances get more grace."""
-    fraction = min(1.0, speech_seconds / 3.0)
-    return base_seconds + (max_seconds - base_seconds) * fraction
+    return _shared_resolve_silence_seconds(
+        vad_mode,
+        explicit_silence_seconds,
+        runtime=get_runtime_vad_settings(),
+        command_default=float(VAD_COMMAND_SILENCE_SECONDS),
+        chat_default=float(VAD_CHAT_SILENCE_SECONDS),
+    )
 
 
 def _get_runtime_vad_detector():
@@ -110,15 +101,7 @@ def _get_runtime_vad_detector():
 
 
 def _seconds_to_chunks(seconds):
-    if seconds <= 0:
-        return 1
-    samples = int(seconds * SAMPLE_RATE)
-    return max(1, int(math.ceil(samples / float(AUDIO_CHUNK_SIZE))))
-
-
-def _chunk_rms(chunk):
-    normalized = chunk.astype(np.float32) / 32768.0
-    return float(np.sqrt(np.mean(np.square(normalized))))
+    return _shared_seconds_to_chunks(seconds, sample_rate=SAMPLE_RATE, chunk_size=AUDIO_CHUNK_SIZE)
 
 
 def _write_wav_file(filename, sample_rate, audio_int16):
@@ -174,6 +157,7 @@ def record_utterance(
 
     speech_detected = False
     silence_chunks = 0
+    voiced_run = 0
     speech_samples = 0
     max_chunks = _seconds_to_chunks(max_duration)
     max_speech_chunks = _seconds_to_chunks(min(max_duration, max(0.5, float(max_speech_seconds))))
@@ -215,8 +199,11 @@ def record_utterance(
                     captured_chunks.append(chunk.copy())
                     speech_samples += int(chunk.size)
                     if is_voice:
-                        silence_chunks = 0
+                        voiced_run += 1
+                        if voiced_run >= 2:
+                            silence_chunks = 0
                     else:
+                        voiced_run = 0
                         silence_chunks += 1
 
                     silence_target = _seconds_to_chunks(

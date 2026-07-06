@@ -1156,10 +1156,13 @@ _VK_CONTROL = 0x11
 _VK_MENU = 0x12   # Alt
 _VK_SHIFT = 0x10
 _VK_LEFT = 0x25
+_VK_UP = 0x26
 _VK_RIGHT = 0x27
+_VK_DOWN = 0x28
 _VK_F4 = 0x73
 _VK_T = 0x54
 _VK_W = 0x57
+_VK_LWIN = 0x5B
 
 
 def _send_hotkey(*vk_codes):
@@ -1243,6 +1246,32 @@ def _close_named_browser_tab(normalized_args, is_ar):
     return False, msg, {"method": "close_named_tab", "query": tab_query, "score": best_score[0]}
 
 
+def _configure_window_ctypes(user32) -> None:
+    """Declare argtypes/restype for the Win32 calls used in window management.
+
+    ctypes defaults every undeclared argument/return value to 32-bit c_int.
+    HWND is a real pointer (64-bit on 64-bit Windows) — leaving these
+    undeclared risks the window handle being silently misinterpreted/
+    truncated when passed between GetForegroundWindow and ShowWindow, which
+    would make the call a no-op on some handle values without raising any
+    error (ShowWindow still returns nonzero even when it does nothing).
+    """
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetForegroundWindow.argtypes = []
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.PostMessageW.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.MoveWindow.restype = wintypes.BOOL
+    user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]
+
+
 def _run_native_window_command(action_key, language=None):
     """Native ctypes dispatch for window management and browser tab shortcuts."""
     if not hasattr(ctypes, "windll"):
@@ -1250,32 +1279,57 @@ def _run_native_window_command(action_key, language=None):
 
     is_ar = _is_arabic_language(language)
     user32 = ctypes.windll.user32
+    _configure_window_ctypes(user32)
 
     try:
         if action_key == "window_maximize":
             hwnd = user32.GetForegroundWindow()
             if not hwnd:
                 return False, "", {}
+            before = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(before))
             user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+            after = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(after))
+            method = "native_window"
+            # Some apps (Electron/Chromium windows especially) silently ignore
+            # a raw SW_MAXIMIZE message despite ShowWindow reporting success —
+            # verify the rect actually changed and fall back to the Win+Up
+            # shortcut (the same path a manual keypress takes) if not.
+            if (before.left, before.top, before.right, before.bottom) == (
+                after.left, after.top, after.right, after.bottom
+            ):
+                if _send_hotkey(_VK_LWIN, _VK_UP):
+                    method = "native_hotkey_fallback"
+                else:
+                    return False, "", {}
             msg = "كبّرت الشبابك." if is_ar else "Window maximized."
-            return True, msg, {"method": "native_window", "sw": "SW_MAXIMIZE"}
+            return True, msg, {"method": method, "sw": "SW_MAXIMIZE"}
 
         if action_key == "window_minimize":
             hwnd = user32.GetForegroundWindow()
             if not hwnd:
                 return False, "", {}
+            before = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(before))
             user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+            method = "native_window"
+            if not user32.IsIconic(hwnd):
+                if _send_hotkey(_VK_LWIN, _VK_DOWN):
+                    method = "native_hotkey_fallback"
+                else:
+                    return False, "", {}
             msg = "صغّرت الشبابك." if is_ar else "Window minimized."
-            return True, msg, {"method": "native_window", "sw": "SW_MINIMIZE"}
+            return True, msg, {"method": method, "sw": "SW_MINIMIZE"}
 
         if action_key == "window_snap_left":
-            if _send_hotkey(0x5B, _VK_LEFT):  # Win+Left
+            if _send_hotkey(_VK_LWIN, _VK_LEFT):  # Win+Left
                 msg = "دفعت الشبابك ناحية اليسار." if is_ar else "Window snapped left."
                 return True, msg, {"method": "native_hotkey", "keys": "Win+Left"}
             return False, "", {}
 
         if action_key == "window_snap_right":
-            if _send_hotkey(0x5B, _VK_RIGHT):  # Win+Right
+            if _send_hotkey(_VK_LWIN, _VK_RIGHT):  # Win+Right
                 msg = "دفعت الشبابك ناحية اليمين." if is_ar else "Window snapped right."
                 return True, msg, {"method": "native_hotkey", "keys": "Win+Right"}
             return False, "", {}
@@ -1332,6 +1386,7 @@ def _resize_active_window(amount_percent=10, language=None):
 
     try:
         user32 = ctypes.windll.user32
+        _configure_window_ctypes(user32)
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return False, "", {}

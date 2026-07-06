@@ -91,8 +91,6 @@ pywin32>=306; platform_system == "Windows"
 # ElevenLabs TTS (optional, requires API key; edge-tts used as fallback)
 elevenlabs>=1.0.0
 
-# System tray UI
-pystray==0.19.5
 Pillow>=9.0.0
 
 # === TIER 6: DESKTOP UI BRIDGE (OPTIONAL) ===

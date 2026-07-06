@@ -147,7 +147,105 @@ def intent_label(intent: str, language: str = "en") -> str:
 _intent_label = intent_label
 
 
-def build_ambiguity_clarification(candidates_top2, language: str = "en") -> str:
+# Radio/device toggles whose training utterances overlap between OS_SETTINGS
+# ("open X settings") and OS_SYSTEM_COMMAND ("turn X on/off") in the semantic
+# router — a bare "Bluetooth"/"البلوتوث" utterance sits ambiguously between
+# them since both intents' training data share the device name as the
+# strongest token. Detecting the device lets us ask a concrete on/off/settings
+# question instead of the generic, unhelpful "did you mean X or Y?" phrasing.
+_RADIO_DEVICE_MARKERS: dict[str, tuple[str, ...]] = {
+    "bluetooth": ("bluetooth", "بلوتوث", "البلوتوث"),
+    "wifi": ("wifi", "wi-fi", "wi fi", "واي فاي", "الواي فاي", "وايفاي"),
+    "airplane_mode": ("airplane", "flight mode", "الطيران", "وضع الطيران"),
+}
+
+_RADIO_DEVICE_LABELS: dict[str, dict[str, str]] = {
+    "bluetooth": {"en": "Bluetooth", "ar": "البلوتوث"},
+    "wifi": {"en": "Wi-Fi", "ar": "الواي فاي"},
+    "airplane_mode": {"en": "airplane mode", "ar": "وضع الطيران"},
+}
+
+_RADIO_AMBIGUITY_TEMPLATE = {
+    "en": "Do you want to turn {device} on or off, or open its settings?",
+    "ar": "تقصد تشغّل أو تطفي {device}، ولا تفتح إعداداته؟",
+}
+
+# action_key suffix used by os_control.system_ops for each device's on/off
+# toggle (e.g. "bluetooth" -> "bluetooth_on"/"bluetooth_off"). airplane_mode's
+# action_key is "airplane_on"/"airplane_off" (no "_mode" suffix).
+_RADIO_ACTION_KEY_PREFIX = {
+    "bluetooth": "bluetooth",
+    "wifi": "wifi",
+    "airplane_mode": "airplane",
+}
+
+_RADIO_OPTION_LABELS = {
+    "on": {"en": "turn on", "ar": "تشغيل"},
+    "off": {"en": "turn off", "ar": "تطفية"},
+    "settings": {"en": "open settings", "ar": "فتح الإعدادات"},
+}
+
+_RADIO_OPTION_REPLY_TOKENS = {
+    "on": ("on", "turn on", "enable", "شغل", "شغله", "شغّل", "تشغيل"),
+    "off": ("off", "turn off", "disable", "اطفي", "اطفيه", "أطفي", "قفل", "تطفية", "ايقاف", "إيقاف"),
+    "settings": ("settings", "الاعدادات", "الإعدادات", "اعدادات", "إعدادات"),
+}
+
+
+def detect_radio_device(source_text: str) -> str:
+    """Return the radio device key mentioned in source_text, or "" if none."""
+    normalized = str(source_text or "").strip().lower()
+    if not normalized:
+        return ""
+    for device_key, markers in _RADIO_DEVICE_MARKERS.items():
+        if any(marker in normalized for marker in markers):
+            return device_key
+    return ""
+
+
+# Backward-compatible alias for the original internal name.
+_detect_radio_device = detect_radio_device
+
+
+def build_radio_device_options(device_key: str, language: str = "en") -> list[dict]:
+    """Return 3 dispatchable options (on/off/settings) for a radio device.
+
+    Each option carries a real action_key so the resolver can dispatch
+    directly — no re-parsing of the original ambiguous text needed.
+    """
+    lang = _lang_key(language)
+    prefix = _RADIO_ACTION_KEY_PREFIX.get(device_key)
+    if not prefix:
+        return []
+    return [
+        {
+            "id": "on",
+            "label": _RADIO_OPTION_LABELS["on"][lang],
+            "intent": "OS_SYSTEM_COMMAND",
+            "action": "",
+            "args": {"action_key": f"{prefix}_on"},
+            "reply_tokens": list(_RADIO_OPTION_REPLY_TOKENS["on"]),
+        },
+        {
+            "id": "off",
+            "label": _RADIO_OPTION_LABELS["off"][lang],
+            "intent": "OS_SYSTEM_COMMAND",
+            "action": "",
+            "args": {"action_key": f"{prefix}_off"},
+            "reply_tokens": list(_RADIO_OPTION_REPLY_TOKENS["off"]),
+        },
+        {
+            "id": "settings",
+            "label": _RADIO_OPTION_LABELS["settings"][lang],
+            "intent": "OS_SETTINGS",
+            "action": "",
+            "args": {"page": device_key.replace("_", " ")},
+            "reply_tokens": list(_RADIO_OPTION_REPLY_TOKENS["settings"]),
+        },
+    ]
+
+
+def build_ambiguity_clarification(candidates_top2, language: str = "en", source_text: str = "") -> str:
     """Return a "did you mean X or Y?" prompt from the top-2 semantic candidates.
 
     candidates_top2: [(intent_name, score), (intent_name, score)] — as produced
@@ -157,6 +255,13 @@ def build_ambiguity_clarification(candidates_top2, language: str = "en") -> str:
     candidates = list(candidates_top2 or [])
     if not candidates:
         return _DEFAULT_SLOT_TEMPLATE.get(lang, _DEFAULT_SLOT_TEMPLATE["en"])
+
+    candidate_names = {str(c[0]).strip().upper() for c in candidates if c}
+    if candidate_names == {"OS_SETTINGS", "OS_SYSTEM_COMMAND"}:
+        device_key = _detect_radio_device(source_text)
+        if device_key:
+            device_label = _RADIO_DEVICE_LABELS[device_key][lang]
+            return _RADIO_AMBIGUITY_TEMPLATE[lang].format(device=device_label)
 
     first = _intent_label(candidates[0][0] if candidates[0] else "", lang)
     if len(candidates) < 2:

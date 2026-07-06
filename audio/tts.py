@@ -687,7 +687,7 @@ class SpeechEngine:
         thread.start()
         return True, "Speech started."
 
-    def synthesize_one_sentence(self, text, language=None):
+    def synthesize_one_sentence(self, text, language=None, backend=None):
         """Synthesize a single sentence and return (sample_rate, waveform) or None on failure."""
         synth_started = time.perf_counter()
         spoken_text = self._prepare_text_for_speech(text, preferred_language=language)
@@ -695,7 +695,7 @@ class SpeechEngine:
             return None
 
         arabic_preferred = self._is_arabic_preferred_text(spoken_text, preferred_language=language)
-        backend = str(self._resolve_backend() or "auto").strip().lower()
+        backend = str(backend or self._resolve_backend() or "auto").strip().lower()
         result = None
 
         if backend in {"auto", "hybrid"}:

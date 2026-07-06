@@ -29,6 +29,13 @@ from audio.stt import (
     transcribe_streaming_with_meta,
 )
 from audio.vad import SileroVAD
+from audio.vad_timing import (
+    adaptive_silence_seconds as _adaptive_silence_seconds,
+    chunk_rms as _chunk_rms,
+    resolve_silence_seconds as _shared_resolve_silence_seconds,
+    seconds_to_chunks as _shared_seconds_to_chunks,
+)
+from core.logger import get_logger
 from core.config import (
     AUDIO_CHUNK_SIZE,
     MAX_RECORD_DURATION,
@@ -47,16 +54,20 @@ from core.config import (
     VAD_START_TIMEOUT_SECONDS,
 )
 
+logger = get_logger("stt")
+
 _ARABIC_CHAR_RE = _re.compile(r"[؀-ۿ]")
 
 # faster-whisper overrides for Arabic streaming sessions.
 # beam_size=3  — faster than default 5, sufficient quality for real-time partials.
 # vad_filter=False — Silero VAD runs externally; double-VAD causes mis-segmentation.
-# initial_prompt — primes the model with the wake word to bias toward Arabic.
+# initial_prompt=None — never prime with the wake word; it bleeds into/eats the first command word.
 _ARABIC_STREAMING_WHISPER_KWARGS = {
     "beam_size": 3,
     "vad_filter": False,
-    "initial_prompt": "جارفيس، افتح، اقفل، شغل، وقف، search، play، weather، دلوقتي، عايز، ممكن، من فضلك",
+    "language": None,
+    "initial_prompt": None,        # never prime with the wake word
+    "condition_on_previous_text": False,
 }
 
 
@@ -74,15 +85,7 @@ _STREAMING_VAD_LOCK = threading.Lock()
 
 
 def _seconds_to_chunks(seconds: float) -> int:
-    if seconds <= 0:
-        return 1
-    samples = int(seconds * SAMPLE_RATE)
-    return max(1, int(np.ceil(samples / float(AUDIO_CHUNK_SIZE))))
-
-
-def _chunk_rms(chunk: np.ndarray) -> float:
-    normalized = chunk.astype(np.float32) / 32768.0
-    return float(np.sqrt(np.mean(np.square(normalized))))
+    return _shared_seconds_to_chunks(seconds, sample_rate=SAMPLE_RATE, chunk_size=AUDIO_CHUNK_SIZE)
 
 
 def _normalize_audio_peak(audio_int16: np.ndarray) -> np.ndarray:
@@ -148,18 +151,17 @@ def prewarm_streaming_vad() -> bool:
 
 
 def _resolve_silence_seconds(vad_mode: str, explicit_silence_seconds: Optional[float] = None) -> float:
-    if explicit_silence_seconds is not None:
-        return max(0.05, float(explicit_silence_seconds))
-
-    mode = str(vad_mode or "command").strip().lower()
-    if mode in {"chat", "conversation", "dialog", "turn"}:
-        return float(VAD_CHAT_SILENCE_SECONDS)
-    return float(VAD_COMMAND_SILENCE_SECONDS)
-
-
-def _adaptive_silence_seconds(base_seconds: float, speech_seconds: float, max_seconds: float) -> float:
-    fraction = min(1.0, speech_seconds / 3.0)
-    return base_seconds + (max_seconds - base_seconds) * fraction
+    # Reads through the live runtime dict (not just static config) so this
+    # picks up any VAD profile applied via audio.mic.set_runtime_vad_settings —
+    # previously this fell back to static VAD_*_SILENCE_SECONDS only, silently
+    # ignoring runtime profile changes that audio.mic.record_utterance honored.
+    return _shared_resolve_silence_seconds(
+        vad_mode,
+        explicit_silence_seconds,
+        runtime=get_runtime_vad_settings(),
+        command_default=float(VAD_COMMAND_SILENCE_SECONDS),
+        chat_default=float(VAD_CHAT_SILENCE_SECONDS),
+    )
 
 
 def _safe_callback(callback: Optional[Callable[..., None]], *args: Any) -> None:
@@ -192,6 +194,11 @@ def _transcribe_buffer(
 
     audio = np.concatenate(chunks, axis=0).astype(np.int16, copy=False)
     audio = _normalize_audio_peak(audio)
+    # Pad a short lead-in of digital silence so the onset phoneme never sits
+    # at sample 0 — Whisper is more likely to truncate or swallow a word that
+    # starts at the very first frame than one with a brief run-up.
+    lead = np.zeros(int(0.12 * SAMPLE_RATE), dtype=np.int16)
+    audio = np.concatenate([lead, audio], axis=0)
     _write_wav_file(filename, SAMPLE_RATE, audio)
 
     # Use Arabic-optimised whisper params only when explicitly in Arabic mode.
@@ -362,6 +369,9 @@ class StreamingSTT:
         speech_detected = False
         speech_samples = 0
         silence_chunks = 0
+        voiced_run = 0
+        stop_reason = ""
+        silence_target = 0
         partial_text = ""
         last_partial_emit = 0.0
         speech_started_index = -1
@@ -387,11 +397,13 @@ class StreamingSTT:
             ):
                 for index in range(max_chunks):
                     if self._stop_event.is_set():
+                        stop_reason = "stopped"
                         break
                     try:
                         chunk = self._chunk_queue.get(timeout=0.1)
                     except queue.Empty:
                         if speech_detected and (time.perf_counter() - started_at) >= self.max_duration:
+                            stop_reason = "max_duration"
                             break
                         continue
 
@@ -414,6 +426,7 @@ class StreamingSTT:
                             silence_chunks = 0
                             _safe_callback(self.on_speech_start)
                         elif index >= start_timeout_chunks:
+                            stop_reason = "start_timeout"
                             break
 
                     if not speech_detected:
@@ -422,8 +435,15 @@ class StreamingSTT:
                     captured_chunks.append(chunk.copy())
                     speech_samples += int(chunk.size)
                     if is_voice:
-                        silence_chunks = 0
+                        voiced_run += 1
+                        # Require 2 consecutive voiced frames before resetting the
+                        # silence counter — a single noisy frame mid-pause otherwise
+                        # restarts the whole silence timer and drives recording into
+                        # the max_speech_cap in a noisy room.
+                        if voiced_run >= 2:
+                            silence_chunks = 0
                     else:
+                        voiced_run = 0
                         silence_chunks += 1
 
                     now = time.perf_counter()
@@ -459,10 +479,24 @@ class StreamingSTT:
                         )
                     )
                     if speech_samples >= min_speech_samples and silence_chunks >= silence_target:
+                        stop_reason = "silence"
                         break
                     if speech_started_index >= 0 and (index - speech_started_index + 1) >= max_speech_chunks:
+                        stop_reason = "max_speech_cap"
                         break
+                else:
+                    stop_reason = stop_reason or "max_chunks"
         finally:
+            if stop_reason:
+                logger.info(
+                    "Recording stop cause: silence_chunks=%d/%d speech_s=%.2f elapsed=%.2f reason=%s",
+                    silence_chunks,
+                    silence_target,
+                    speech_samples / float(SAMPLE_RATE),
+                    time.perf_counter() - started_at,
+                    stop_reason,
+                )
+
             self._stop_event.set()
             if partial_future is not None:
                 try:

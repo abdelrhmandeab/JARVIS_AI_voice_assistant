@@ -151,9 +151,7 @@ the configured / hardware-recommended model on first launch.
 python main.py
 ```
 
-Say **"Jarvis"** or **"جارفيس"** — both are detected by the same model. The
-greeting plays fully before the wake-word listener opens the microphone, so
-there's no race between the two.
+Say **"Jarvis"** or **"جارفيس"** — both are detected by the same model.
 
 ## Health check
 
@@ -231,7 +229,7 @@ os_control/   — Windows integration: volume/brightness/lock (native_ops),
                 PIN confirmation, app open/close, email/calendar, clipboard,
                 screen capture, policy/risk gating
 tools/        — weather (Open-Meteo), web_search (DuckDuckGo), calculator
-ui/           — system tray + WebSocket bridge to the desktop UI
+ui/           — WebSocket bridge to the desktop UI
 desktop/      — Tauri-based desktop UI (optional, separate build)
 scripts/      — wake-word training/maintenance scripts
 models/       — the shipped wake-word ONNX model

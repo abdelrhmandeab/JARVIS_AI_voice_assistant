@@ -2418,7 +2418,6 @@ def fill_phase9(doc_path: Path = DOC_PATH) -> Path:
 UI_FILE_RESPONSIBILITIES = {
     "ui/bridge.py": "Optional FastAPI/uvicorn WebSocket bridge from engine events to desktop clients and UI commands back to route_command.",
     "ui/events.py": "Shared engine-to-UI event names, UI-to-engine command names, and JSON serialization helper.",
-    "ui/tray.py": "Optional pystray system tray with state-colored icon, settings/log shortcuts, restart, demo toggle, and quit cleanup.",
 }
 
 DESKTOP_KEY_FILE_RESPONSIBILITIES = {
@@ -2472,7 +2471,6 @@ def ui_config_rows() -> list[tuple[str, str]]:
         ("WAKE_WORD_MODE", "Included in bridge config events."),
         ("FEATURE_FLAGS", "Included in bridge config events and edited locally by dashboard toggles before sending feature_flag commands."),
         ("STT_BACKEND / TTS_DEFAULT_BACKEND / PERSONA_DEFAULT", "Included in bridge config events for dashboard display/control context."),
-        ("PROJECT_ROOT / LOG_FILE", "ui/tray.py uses these for .env, project folder, and log shortcuts."),
         ("VITE_JARVIS_WS_URL", "desktop/src/protocol.ts uses this environment variable to target the real Python bridge; otherwise it defaults to mock ws://localhost:8765."),
     ]
 
@@ -2480,8 +2478,8 @@ def ui_config_rows() -> list[tuple[str, str]]:
 def add_phase10_content(document: Document) -> None:
     document.add_heading("Purpose", level=3)
     document.add_paragraph(
-        "ui/ and desktop/ provide an optional visual layer over the Jarvis engine. The Python side can expose a WebSocket bridge "
-        "and a small system tray, while the desktop side is a Tauri and React application with overlay and dashboard windows. "
+        "ui/ and desktop/ provide an optional visual layer over the Jarvis engine. The Python side can expose a WebSocket bridge, "
+        "while the desktop side is a Tauri and React application with overlay and dashboard windows (including its own native system tray). "
         "The engine remains usable without either UI surface: bridge startup exits cleanly when disabled or when optional dependencies are missing, "
         "and the desktop application connects to the bridge rather than hosting the engine."
     )
@@ -2506,15 +2504,6 @@ def add_phase10_content(document: Document) -> None:
     add_caption(document, "Listing 4.11.3: WebSocket client loop and handled UI commands.")
     add_code_excerpt(document, code_excerpt("ui/bridge.py", 226, 306))
     add_caption(document, "Listing 4.11.4: route_command handoff, config/health events, and broadcast fan-out.")
-
-    document.add_paragraph(
-        "tray.py is another optional UI surface. If pystray is missing, start() logs that the tray icon is disabled. When available, it creates a state-colored icon, "
-        "registers a dialogue-state listener, exposes menu shortcuts for .env/logs/project folder, toggles demo mode, restarts Jarvis, and performs shutdown cleanup on quit."
-    )
-    add_code_excerpt(document, code_excerpt("ui/tray.py", 43, 145))
-    add_caption(document, "Listing 4.11.5: Tray menu actions, restart, .env demo-mode update, and shortcuts.")
-    add_code_excerpt(document, code_excerpt("ui/tray.py", 176, 230))
-    add_caption(document, "Listing 4.11.6: Optional tray startup, state listener, icon thread, and shutdown.")
 
     document.add_heading("4.11.2 desktop/", level=2)
     document.add_heading("Key File Inventory", level=3)
@@ -2591,9 +2580,9 @@ def add_phase10_content(document: Document) -> None:
     document.add_heading("Behavior In Different Situations", level=3)
     add_styled_table(document, ["Situation", "UI/desktop behavior", "Evidence"], [
         ("Normal", "Bridge starts on /ws, sends config on connection, broadcasts state and response events, desktop hook dispatches events into Zustand, and overlay/dashboard render from store state.", "ui/bridge.py, ui/events.py, desktop/src/protocol.ts, useJarvisSocket.ts, jarvisStore.ts, App.tsx."),
-        ("Headless", "If the bridge is disabled or optional dependencies are missing, start() returns without raising; tray also disables itself when pystray is unavailable.", "ui/bridge.py start(); ui/tray.py start()."),
+        ("Headless", "If the bridge is disabled or optional dependencies are missing, start() returns without raising.", "ui/bridge.py start()."),
         ("Disconnected", "Desktop connection status becomes disconnected and the hook retries with exponential backoff; dashboard can show the disconnected status from the store.", "useJarvisSocket.ts; Dashboard.tsx."),
-        ("UI Absent", "Tauri window commands affect only desktop windows; closeApp notes that the engine is separate, and Python bridge/tray are optional surfaces over the engine.", "desktop/src/lib/app.ts; ui/bridge.py; ui/tray.py."),
+        ("UI Absent", "Tauri window commands affect only desktop windows; closeApp notes that the engine is separate, and the Python bridge is an optional surface over the engine.", "desktop/src/lib/app.ts; ui/bridge.py."),
         ("Partial Commands", "setting_update and feature_flag commands are currently logged by the bridge rather than applied; the dashboard updates local UI state before sending them.", "ui/bridge.py _handle_message(); Dashboard.tsx."),
     ])
     add_caption(document, "Table 4.11.5: UI behavior under normal, headless, disconnected, absent, and partial-command conditions.")
@@ -2601,7 +2590,7 @@ def add_phase10_content(document: Document) -> None:
     document.add_heading("Contribution Summary", level=3)
     document.add_paragraph(
         "ui/ and desktop/ add observability and hands-on control without making the assistant dependent on a graphical surface. "
-        "The bridge exposes a narrow JSON protocol, the tray gives a lightweight operator menu, and the Tauri/React desktop turns engine state into an overlay and dashboard while preserving a headless runtime path."
+        "The bridge exposes a narrow JSON protocol, and the Tauri/React desktop turns engine state into an overlay and dashboard (with its own native system tray) while preserving a headless runtime path."
     )
 
 
@@ -2881,7 +2870,7 @@ def dependency_rows() -> list[tuple[str, str, str]]:
 
 def root_inventory_rows() -> list[tuple[str, str]]:
     return [
-        ("main.py", "Thin launcher: migrates legacy paths, parses --demo-mode, starts optional tray/bridge, then calls core.orchestrator.run()."),
+        ("main.py", "Thin launcher: migrates legacy paths, parses --demo-mode, starts optional bridge, then calls core.orchestrator.run()."),
         ("core/", "Orchestration, routing, configuration, memory logic, persona/response shaping, diagnostics, and handlers."),
         ("audio/", "Wake-word detection, microphone capture, VAD, STT, and TTS runtime components."),
         ("nlp/", "Text normalization, code-switch routing, semantic/fuzzy/keyword routing, and slot/entity extraction."),
@@ -2889,7 +2878,7 @@ def root_inventory_rows() -> list[tuple[str, str]]:
         ("os_control/", "Windows side-effect adapters, policy/risk gates, confirmation, persistence, and verification."),
         ("tools/", "Live-data and utility tools such as weather, web search, and calculator."),
         ("utils/", "Shared helpers consumed by other layers."),
-        ("ui/ and desktop/", "Optional tray, WebSocket bridge, and Tauri desktop UI; the engine can run without them."),
+        ("ui/ and desktop/", "Optional WebSocket bridge and Tauri desktop UI (with its own native tray); the engine can run without them."),
         ("data/", "Runtime artifact home for logs, memory, indices, state, KB, vectors, VAD data, and wake samples."),
         ("models/", "Tracked model assets, including the deployed wake-word ONNX model."),
         ("scripts/", "Developer and wake-word training/maintenance scripts."),
@@ -2941,8 +2930,8 @@ def add_phase1_content(document: Document) -> None:
     document.add_heading("4.2 Entry Point main.py", level=2)
     document.add_paragraph(
         "The launcher keeps policy and assistant behavior outside the root file. It performs only process setup: "
-        "legacy data-path migration is imported and executed, --demo-mode sets JARVIS_DEMO_MODE, optional tray and "
-        "WebSocket bridge startup are attempted defensively, and the assistant engine is handed to core.orchestrator.run()."
+        "legacy data-path migration is imported and executed, --demo-mode sets JARVIS_DEMO_MODE, optional "
+        "WebSocket bridge startup is attempted defensively, and the assistant engine is handed to core.orchestrator.run()."
     )
     add_main_excerpt(document)
     add_caption(document, "Listing 4.1.1: The root entry point delegates runtime behavior to the core orchestrator.")
@@ -3000,9 +2989,8 @@ def add_phase1_content(document: Document) -> None:
         [
             ("1", "Import core.data_migration.migrate_legacy_paths() and execute it before runtime starts.", "Migration mechanics are covered in core/."),
             ("2", "Parse --demo-mode; if present, set JARVIS_DEMO_MODE=1 for downstream modules.", "Demo overlay behavior is covered with routing/core behavior."),
-            ("3", "Attempt to start the optional system tray without making it a hard dependency.", "UI tray behavior is covered in Section 4.11."),
-            ("4", "Attempt to start the optional WebSocket bridge for the desktop UI.", "Bridge protocol is covered in Section 4.11."),
-            ("5", "Call core.orchestrator.run() to begin the assistant loop.", "Wake/listen/process mechanics are covered in core/ and audio/."),
+            ("3", "Attempt to start the optional WebSocket bridge for the desktop UI.", "Bridge protocol is covered in Section 4.11."),
+            ("4", "Call core.orchestrator.run() to begin the assistant loop.", "Wake/listen/process mechanics are covered in core/ and audio/."),
         ],
     )
     add_caption(document, "Table 4.1.5: Startup behavior visible from the repository root.")
@@ -3112,7 +3100,7 @@ def add_phase2_content(document: Document) -> None:
     document.add_paragraph(
         "orchestrator.py owns startup ordering and the long-lived wake/listen/process loop. It logs startup state, "
         "checks elevation, installs shutdown handling, initializes command services, warms latency-critical components, "
-        "attaches interrupt targets, plays the blocking greeting, starts cache/adaptive wake background work, and then "
+        "attaches interrupt targets, starts cache/adaptive wake background work, and then "
         "records utterances into the processing pipeline."
     )
     add_code_excerpt(document, code_excerpt("core/orchestrator.py", 1693, 1717))
@@ -3907,7 +3895,7 @@ def add_phase12_c3_content(document: Document) -> None:
             ("Tier 2: Orchestration (core)", "httpx, psutil, rapidfuzz", "Ollama/HTTP client, hardware detection, fuzzy intent matching."),
             ("Tier 3: Optional LLM backends", "anthropic", "Optional Claude API backend; Ollama remains primary."),
             ("Tier 4: Intelligent features", "chromadb, sentence-transformers, duckduckgo-search, ddgs", "Semantic routing, vector memory, live web search; degrade gracefully if absent."),
-            ("Tier 5: OS integration (Windows)", "comtypes, pycaw, wmi, winsdk, screen-brightness-control, pyperclip, watchdog, pywin32, elevenlabs, pystray, Pillow", "Volume/brightness/radio control, clipboard, Outlook, tray icon."),
+            ("Tier 5: OS integration (Windows)", "comtypes, pycaw, wmi, winsdk, screen-brightness-control, pyperclip, watchdog, pywin32, elevenlabs, Pillow", "Volume/brightness/radio control, clipboard, Outlook."),
             ("Tier 6: Desktop UI bridge (optional)", "fastapi, uvicorn[standard]", "WebSocket bridge to the desktop app; engine runs without it."),
             ("Training only (requirements-training.txt)", "scipy, torch", "Wake-word model retraining (scripts/train_arabic_wake_model.py), not needed to run Jarvis."),
         ],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from pathlib import Path
 from typing import Any
 
 from core import config
@@ -30,15 +31,22 @@ logger = get_logger("bridge")
 
 try:
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.staticfiles import StaticFiles
     import uvicorn
 except ImportError as exc:  # pragma: no cover - exercised when optional deps are absent.
     FastAPI = None
     WebSocket = Any
     WebSocketDisconnect = Exception
+    StaticFiles = None
     uvicorn = None
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
+
+# desktop/dist — the built React/Vite app (`npm run build` inside desktop/).
+# Served on the same host:port as the /ws bridge so the whole UI is reachable
+# from a single origin, e.g. http://127.0.0.1:9720/.
+_DESKTOP_DIST_DIR = Path(__file__).resolve().parent.parent / "desktop" / "dist"
 
 
 class JarvisBridge:
@@ -120,6 +128,18 @@ class JarvisBridge:
         @app.websocket("/ws")
         async def _websocket_endpoint(websocket: WebSocket) -> None:
             await self.handle_client(websocket)
+
+        # Serve the built desktop UI (desktop/dist) on the same host:port as
+        # /ws, if it has been built. Mounted last so it never shadows /ws.
+        # Falls back to bridge-only mode (no UI route) until `npm run build`
+        # has been run inside desktop/.
+        if _DESKTOP_DIST_DIR.is_dir():
+            app.mount("/", StaticFiles(directory=str(_DESKTOP_DIST_DIR), html=True), name="desktop-ui")
+        else:
+            logger.info(
+                "desktop/dist not found; UI bridge will only serve /ws. "
+                "Run `npm run build` in desktop/ to serve the UI on the same port."
+            )
 
         return app
 

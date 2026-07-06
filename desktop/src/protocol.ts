@@ -143,6 +143,11 @@ export const STATE_COLORS: Record<DialogueState, string> = {
 // Matches core.config.UI_BRIDGE_PORT's default (JARVIS_UI_BRIDGE_PORT).
 export const DEFAULT_BRIDGE_PORT = 9720;
 
+// Port for the Vite-only mock bridge (`npm run dev:mock`) — deliberately
+// different from DEFAULT_BRIDGE_PORT so the mock never collides with a real
+// ui/bridge.py instance running at the same time.
+export const MOCK_WS_PORT = 9721;
+
 // WebSocket URL the UI connects to — the real Python bridge (ui/bridge.py) at
 // ws://127.0.0.1:9720/ws. Override with VITE_JARVIS_WS_URL if the bridge runs
 // elsewhere. `import.meta.env` is undefined when this module is evaluated in a

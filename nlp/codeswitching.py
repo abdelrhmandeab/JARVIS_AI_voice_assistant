@@ -227,6 +227,16 @@ def normalize_arabic(text: str) -> str:
     return t.translate(_AR_DIGITS)
 
 
+# normalize_codeswitched() runs normalize_arabic() on the whole source string
+# before tokenizing (e.g. alef-maksura "على" -> yaa "علي"), so _STOPWORDS
+# entries must be compared against that same normalized form or they silently
+# stop matching — this broke "على" specifically ("ابحث على النت على أخبار
+# العالم" leaked "علي" through as the search entity instead of skipping it).
+# Applied once here rather than at the dict literal above since normalize_arabic
+# isn't defined yet at that point in the module.
+_STOPWORDS = {normalize_arabic(word) for word in _STOPWORDS}
+
+
 def normalize_arabic_preserve_digits(text: str) -> str:
     """Same as normalize_arabic but keeps Arabic-Indic digits intact (٣ stays ٣).
 

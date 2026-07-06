@@ -572,6 +572,20 @@ def _infer_known_app_name(target_text: str):
             or (" " + alias + " ") in (" " + candidate + " ")
         ):
             return _NATURAL_APP_ALIASES[alias]
+
+    # Fall back to the live app catalog (installed/scanned apps, ~200+ entries)
+    # so codeswitch routing recognizes apps beyond the small hardcoded list
+    # above (e.g. "whatsapp") instead of misrouting "افتح whatsapp" to
+    # OS_FILE_NAVIGATION's generic open-file catch-all. Exact-match only —
+    # this is an early-exit fast path, not the full fuzzy resolver used
+    # later by resolve_app_request, so we don't want to guess here.
+    try:
+        from os_control.app_ops import KNOWN_APPS
+
+        if candidate in KNOWN_APPS:
+            return candidate
+    except Exception:
+        pass
     return None
 
 
@@ -838,6 +852,34 @@ def _split_target_and_location(text):
     return _strip_file_target_fillers(cleaned), ""
 
 
+# Radio/system-toggle devices, keyed by normalized entity text (both Arabic
+# and Latin spellings). "افتح"/"شغل" ("open"/"run") + one of these is a
+# system radio toggle (OS_SYSTEM_COMMAND), never a file or app — without this
+# check, codeswitch phrases like "شغل الـ Bluetooth" fell through to the
+# generic file-open catch-all and could open an unrelated file that happened
+# to fuzzy-match "bluetooth".
+_CODESWITCH_RADIO_DEVICE_ACTION_PREFIX = {
+    "bluetooth": "bluetooth",
+    "بلوتوث": "bluetooth",
+    "wifi": "wifi",
+    "wi fi": "wifi",
+    "واي فاي": "wifi",
+    "وايفاي": "wifi",
+    "airplane mode": "airplane",
+    "flight mode": "airplane",
+    "وضع الطيران": "airplane",
+}
+
+
+def _infer_radio_device_action_key(entity_text: str, *, turn_on: bool):
+    candidate = _normalize_for_match(entity_text)
+    candidate = _AR_ARTICLE_PREFIX_RE.sub("", candidate).strip()
+    prefix = _CODESWITCH_RADIO_DEVICE_ACTION_PREFIX.get(candidate)
+    if not prefix:
+        return None
+    return f"{prefix}_{'on' if turn_on else 'off'}"
+
+
 def _try_codeswitched_command(raw, normalized):
     cs = normalize_codeswitched(raw)
     intent = str((cs or {}).get("intent") or "").strip().lower()
@@ -849,6 +891,14 @@ def _try_codeswitched_command(raw, normalized):
         return None
 
     if intent == "open":
+        # "شغل الـ Bluetooth" / "افتح الـ WiFi" → system radio toggle, not a
+        # file or app. Must be checked before the tab/app/file branches below
+        # since a radio-device entity should never fall through to the
+        # generic file-open catch-all in _try_arabic_patterns.
+        radio_action_key = _infer_radio_device_action_key(entity, turn_on=True)
+        if radio_action_key:
+            return ParsedCommand("OS_SYSTEM_COMMAND", raw, normalized, args={"action_key": radio_action_key})
+
         # "افتح tab جديدة في الـ browser" → browser_new_tab
         _tab_tokens = {"tab", "تاب", "new tab", "تاب جديد", "تاب جديدة"}
         if entity_normalized in _tab_tokens or entity_normalized.startswith("tab") or entity_normalized.startswith("تاب"):
@@ -869,6 +919,11 @@ def _try_codeswitched_command(raw, normalized):
                 return ParsedCommand("OS_APP_OPEN", raw, normalized, args={"app_name": app_name})
 
     if intent == "close":
+        # "اقفل الـ Bluetooth" / "close wifi" → system radio toggle off.
+        radio_action_key = _infer_radio_device_action_key(entity, turn_on=False)
+        if radio_action_key:
+            return ParsedCommand("OS_SYSTEM_COMMAND", raw, normalized, args={"action_key": radio_action_key})
+
         # "اقفل tab الـ YouTube" / "close YouTube tab" → browser_close_named_tab
         entity_lower = entity_normalized.lower()
         has_tab = (
@@ -1536,7 +1591,7 @@ _PRIORITY_REGEX_TABLE = [
     ),
     (
         re.compile(
-            r"^(?:ممكن\s+|لو\s+سمحت\s+|please\s+|could\s+you\s+|can\s+you\s+)?(?:ارفع|زود|زيد|اخفض|خفض|قلل|وطي|وطّي|اضبط|ظبط|حط|ضع|اعمل|ترفع|تزود|تزيد|تخفض|تقلل|توطي|توطي)\s+(?:الصوت|الفوليم|volume)\s*(?:ل|لـ|على|الى|إلى|to|at|=)?\s*([0-9٠-٩]{1,3})%?[.!?]*$",
+            r"^(?:ممكن\s+|لو\s+سمحت\s+|please\s+|could\s+you\s+|can\s+you\s+)?(?:ارفع|زود|زيد|اخفض|خفض|قلل|وطي|وطّي|اضبط|ظبط|حط|ضع|اعمل|اجعل|خلي|خلّي|ترفع|تزود|تزيد|تخفض|تقلل|توطي|توطي|تخلي|تخلّي)\s+(?:الصوت|الفوليم|volume)\s*(?:ل|لـ|على|الى|إلى|to|at|=)?\s*([0-9٠-٩]{1,3})%?[.!?]*$",
             re.IGNORECASE,
         ),
         False,
@@ -1547,7 +1602,7 @@ _PRIORITY_REGEX_TABLE = [
     ),
     (
         re.compile(
-            r"^(?:ممكن\s+|لو\s+سمحت\s+|please\s+|could\s+you\s+|can\s+you\s+)?(?:ارفع|زود|زيد|اخفض|خفض|قلل|وطي|وطّي|اضبط|ظبط|حط|ضع|اعمل|ترفع|تزود|تزيد|تخفض|تقلل|توطي|توطي)\s+(?:السطوع|الإضاءة|الاضاءة|النور|brightness|screen\s+brightness)\s*(?:ل|لـ|على|الى|إلى|to|at|=)?\s*([0-9٠-٩]{1,3})%?[.!?]*$",
+            r"^(?:ممكن\s+|لو\s+سمحت\s+|please\s+|could\s+you\s+|can\s+you\s+)?(?:ارفع|زود|زيد|اخفض|خفض|قلل|وطي|وطّي|اضبط|ظبط|حط|ضع|اعمل|اجعل|خلي|خلّي|ترفع|تزود|تزيد|تخفض|تقلل|توطي|توطي|تخلي|تخلّي)\s+(?:السطوع|الإضاءة|الاضاءة|النور|brightness|screen\s+brightness)\s*(?:ل|لـ|على|الى|إلى|to|at|=)?\s*([0-9٠-٩]{1,3})%?[.!?]*$",
             re.IGNORECASE,
         ),
         False,
@@ -4248,6 +4303,39 @@ def _try_cd_commands(normalized, raw):
 # Phase 3: Command Chaining and Batch Operations
 # ---------------------------------------------------------------------------
 
+# Arabic "و" is both a standalone conjunction ("and") AND the first letter
+# of countless ordinary words (واتساب, وقت, وضع, ...), conventionally written
+# attached with no space to whatever follows it either way. A regex alone
+# can't tell "افتح كروم وسبوتيفاي" (chrome AND spotify -- genuine chain) from
+# "افتح واتساب" (open WhatsApp -- one word, "و" is its first letter, not a
+# conjunction) since both look identical at the character level: verb, space,
+# "و", letters. The former has a real word between the verb and the
+# attached-و; the latter has the attached-و immediately as the second word.
+# Requiring at least one word before an attached-و conjunction (so it can
+# never be the sentence's 2nd word) catches this without a dictionary.
+_CONJUNCTION_PATTERN = re.compile(
+    r'\s+(?:and|or|then)\s+|\s+(?:و(?!احد)|أو|ثم)\s+|\s+و(?!احد)(?=[؀-ۿA-Za-z])',
+    re.IGNORECASE,
+)
+
+
+def _find_genuine_conjunction_split(text):
+    """Return a re.Match for a real conjunction split point in text, or None.
+
+    Same match set as the old inline regex, except an attached (no-space)
+    Arabic conjunction is only trusted from the 3rd word onward -- see the
+    comment above _CONJUNCTION_PATTERN for why the 2nd-word case is excluded.
+    """
+    for match in _CONJUNCTION_PATTERN.finditer(text):
+        is_attached_form = match.group(0)[-1] not in " \t"
+        if is_attached_form:
+            word_index = len(text[: match.start()].split())
+            if word_index <= 1:
+                continue
+        return match
+    return None
+
+
 def _try_command_chaining(raw, normalized):
     """Detect and parse chained commands with conjunctions (AND/OR/THEN)."""
     if (
@@ -4257,14 +4345,9 @@ def _try_command_chaining(raw, normalized):
     ):
         return None
 
-    conjunction_pattern = re.compile(
-        r'(?:\s+(?:and|or|then)\s+|\s+(?:\u0648(?!احد)|\u0623\u0648|\u062b\u0645)(?:\s+|(?=[\u0600-\u06FFA-Za-z]))|\s+و(?!احد)(?=[\u0600-\u06FFA-Za-z]))',
-        re.IGNORECASE
-    )
-    
-    if not conjunction_pattern.search(raw):
+    if _find_genuine_conjunction_split(raw) is None:
         return None
-    
+
     return ParsedCommand(
         "COMMAND_CHAIN",
         raw,

@@ -12,6 +12,7 @@ from core.command_parser import (
     try_parse_pin_confirm,
     extract_pin_from_text,
     _looks_like_explanatory_llm_query,
+    _find_genuine_conjunction_split,
 )
 from core.config import (
     CLARIFICATION_CORRECTION_WINDOW_SECONDS,
@@ -2734,10 +2735,20 @@ def _format_search_message(result, language):
 
 
 def _split_chained_command_text(command_text):
+    # Uses the same word-position-aware conjunction detection as
+    # _try_command_chaining (core.command_parser) so a genuine chain like
+    # "افتح كروم وسبوتيفاي" splits correctly while a single word beginning
+    # with "و" (e.g. "افتح واتساب") is never mistaken for two commands.
     raw_text = str(command_text or "").strip()
-    if not raw_text:
-        return []
-    parts = re.split(r"(?:\s+(?:and|then|or)\s+|\s+(?:و|ثم|وبعدين|او|أو)(?:\s+|(?=[\u0600-\u06FFA-Za-z]))|\s+و(?=[\u0600-\u06FFA-Za-z]))", raw_text, flags=re.IGNORECASE)
+    parts = []
+    remaining = raw_text
+    while remaining:
+        match = _find_genuine_conjunction_split(remaining)
+        if match is None:
+            parts.append(remaining)
+            break
+        parts.append(remaining[: match.start()])
+        remaining = remaining[match.end():]
     return [part.strip() for part in parts if part and part.strip()]
 
 
@@ -4727,6 +4738,57 @@ def route_command(
                 session_memory.add_turn(original_text, response, language=language_result.language, intent=filled_parsed.intent)
         return _format_demo_output(filled_parsed, success, response, meta)
 
+    # Radio-device near-tie handler ("Bluetooth" alone, ambiguous between
+    # OS_SETTINGS and OS_SYSTEM_COMMAND): the previous turn asked a concrete
+    # on/off/settings question with 3 dispatchable options (built by
+    # clarification_builder.build_radio_device_options). Each option already
+    # carries the exact action_key/args to dispatch — no re-parsing needed.
+    if pending and pending.get("reason") == "radio_device_ambiguous":
+        options = list(pending.get("options") or [])
+        resolution = resolve_clarification_reply(effective_text, {**pending, "options": options})
+
+        if resolution.status == "cancelled":
+            session_memory.clear_pending_clarification()
+            return resolution.message
+
+        if resolution.status == "resolved" and resolution.option:
+            session_memory.clear_pending_clarification()
+            chosen_option = resolution.option
+            resolved_parsed = ParsedCommand(
+                intent=str(chosen_option.get("intent") or "LLM_QUERY"),
+                raw=str(pending.get("source_text") or original_text),
+                normalized=" ".join(str(pending.get("source_text") or original_text).lower().split()).strip(),
+                args=dict(chosen_option.get("args") or {}),
+            )
+            try:
+                success, response, dispatch_meta = _dispatch(resolved_parsed, on_sentence=on_sentence)
+            except Exception as exc:
+                logger.error("Radio-device-ambiguity dispatch failed: %s", exc)
+                success, response, dispatch_meta = False, "Sorry, I had an internal error.", {}
+            latency = time.perf_counter() - start
+            meta = {"language": language_result.language, "clarification_resolved": True}
+            if dispatch_meta:
+                meta.update(dispatch_meta)
+            metrics.record_command(resolved_parsed.intent, success, latency, language=language_result.language)
+            _update_short_term_context(resolved_parsed, success, response, meta)
+            if success:
+                response = _finalize_success_response(
+                    response, resolved_parsed, language_result.language, original_text, tone_meta, realtime=realtime,
+                )
+                if _should_store_turn(resolved_parsed, response):
+                    session_memory.add_turn(original_text, response, language=language_result.language, intent=resolved_parsed.intent)
+            return _format_demo_output(resolved_parsed, success, response, meta)
+
+        # needs_clarification / not_a_reply — re-prompt up to CLARIFY_MAX_ROUNDS.
+        attempts = int(pending.get("attempts") or 0) + 1
+        if attempts >= CLARIFY_MAX_ROUNDS:
+            session_memory.clear_pending_clarification()
+            pending = None
+        else:
+            pending["attempts"] = attempts
+            session_memory.set_pending_clarification(pending)
+            return resolution.message or pending.get("prompt") or ""
+
     # Semantic near-tie handler: the previous turn asked "did you mean X or Y?"
     # (Phase 3 margin scoring + Phase 6 clarification). Resolve the reply
     # against the two candidate intents via the existing option-resolution
@@ -5259,15 +5321,33 @@ def route_command(
         # ask a targeted "did you mean X or Y?" instead of silently falling to LLM_QUERY.
         _ambiguity_prompt = clarification_builder.build_ambiguity_clarification(
             nlu_meta["semantic_candidates"], language_result.language,
+            source_text=original_text,
+        )
+        # OS_SETTINGS vs OS_SYSTEM_COMMAND ambiguity for a bare radio-device
+        # mention (e.g. "Bluetooth" alone) gets a concrete on/off/settings
+        # question with 3 directly-dispatchable options, instead of the
+        # generic 2-intent-label choice — see build_radio_device_options.
+        _candidate_names = {
+            str(name).strip().upper() for name, _score in (nlu_meta["semantic_candidates"] or [])
+        }
+        _radio_device = (
+            clarification_builder.detect_radio_device(original_text)
+            if _candidate_names == {"OS_SETTINGS", "OS_SYSTEM_COMMAND"}
+            else ""
+        )
+        _radio_options = (
+            clarification_builder.build_radio_device_options(_radio_device, language_result.language)
+            if _radio_device
+            else []
         )
         session_memory.set_pending_clarification({
-            "reason": "semantic_ambiguous",
+            "reason": "radio_device_ambiguous" if _radio_options else "semantic_ambiguous",
             "intent": "LLM_QUERY",
             "action": "",
             "source_text": original_text,
             "args": {},
             "prompt": _ambiguity_prompt,
-            "options": [],
+            "options": _radio_options,
             "candidates": list(nlu_meta["semantic_candidates"]),
             "attempts": 0,
         })

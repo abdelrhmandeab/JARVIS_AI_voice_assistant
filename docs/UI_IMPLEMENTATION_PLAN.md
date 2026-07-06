@@ -449,7 +449,6 @@ Surfaces real config values from `core/config.py` (currently edited via `.env`):
 | **Audio / VAD** | Sliders for thresholds | `JARVIS_VAD_ENERGY_THRESHOLD`, `JARVIS_VAD_COMMAND_SILENCE_SECONDS`, `JARVIS_VAD_CHAT_SILENCE_SECONDS`, `JARVIS_MAX_RECORD_DURATION` |
 | **Wake word** | Mode selector (en/ar/both), threshold sliders | `JARVIS_WAKE_MODE`, `JARVIS_WAKE_WORD_EN_THRESHOLD`, `JARVIS_WAKE_WORD_AR_THRESHOLD` |
 | **Persona** | Style selector | `JARVIS_PERSONA_DEFAULT` (friendly/formal/casual/brief/professional) |
-| **Greeting** | Toggle, language, custom text | `JARVIS_GREETING_ENABLED`, `JARVIS_GREETING_LANGUAGE`, `JARVIS_GREETING_TEXT_EN`, `JARVIS_GREETING_TEXT_AR` |
 
 ### 7.2 Diagnostics panel
 

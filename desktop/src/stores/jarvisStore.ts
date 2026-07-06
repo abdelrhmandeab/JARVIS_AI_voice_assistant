@@ -1,11 +1,20 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { ConfigValues, DialogueState, EngineEvent, FeatureFlags, Language } from '../protocol';
+import type { ThemePreference } from '../lib/theme';
 
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 export type AvatarDirection = 'aurora' | 'glyph' | 'glassai' | 'companion';
 export type AppView = 'overlay' | 'dashboard';
 export type UiLanguage = Language | 'auto';
+export type VoiceGender = 'male' | 'female';
+export type NotificationTone = 'info' | 'success' | 'error';
+
+export interface Notification {
+  id: string;
+  tone: NotificationTone;
+  message: string;
+}
 
 interface JarvisState {
   connectionStatus: ConnectionStatus;
@@ -25,6 +34,9 @@ interface JarvisState {
   avatarDirection: AvatarDirection;
   previewDialogueState: DialogueState | null;
   textPromptEnabled: boolean;
+  theme: ThemePreference;
+  voiceGender: VoiceGender;
+  notifications: Notification[];
   dispatch: (event: EngineEvent) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setMuted: (muted: boolean) => void;
@@ -32,10 +44,13 @@ interface JarvisState {
   setAppView: (view: AppView) => void;
   setUiLanguage: (language: UiLanguage) => void;
   setTextPromptEnabled: (enabled: boolean) => void;
+  setTheme: (theme: ThemePreference) => void;
+  setVoiceGender: (voiceGender: VoiceGender) => void;
   setFeatureFlagLocal: (flag: keyof FeatureFlags, enabled: boolean) => void;
   setConfigValueLocal: <K extends keyof ConfigValues>(key: K, value: ConfigValues[K]) => void;
   previewState: (state: DialogueState | null) => void;
   setPreviewState: (state: DialogueState | null) => void;
+  dismissNotification: (id: string) => void;
   reset: () => void;
   lastError: string | null;
 }
@@ -58,6 +73,9 @@ const initialState = {
   avatarDirection: 'glassai' as AvatarDirection,
   previewDialogueState: null,
   textPromptEnabled: true,
+  theme: 'auto' as ThemePreference,
+  voiceGender: 'female' as VoiceGender,
+  notifications: [] as Notification[],
   lastError: null,
 };
 
@@ -113,6 +131,14 @@ export const useJarvisStore = create<JarvisState>()(
           case 'config':
             set({ config: event.values });
             break;
+          case 'notify':
+            set((state) => ({
+              notifications: [
+                ...state.notifications,
+                { id: crypto.randomUUID(), tone: event.tone ?? 'info', message: event.message },
+              ],
+            }));
+            break;
         }
       },
       setConnectionStatus: (status) => set({ connectionStatus: status }),
@@ -121,6 +147,8 @@ export const useJarvisStore = create<JarvisState>()(
       setAppView: (appView) => set({ appView }),
       setUiLanguage: (uiLanguage) => set({ uiLanguage }),
       setTextPromptEnabled: (textPromptEnabled) => set({ textPromptEnabled }),
+      setTheme: (theme) => set({ theme }),
+      setVoiceGender: (voiceGender) => set({ voiceGender }),
       setFeatureFlagLocal: (flag, enabled) =>
         set((state) => {
           if (!state.config) {
@@ -152,6 +180,8 @@ export const useJarvisStore = create<JarvisState>()(
         }),
       previewState: (previewDialogueState) => set({ previewDialogueState }),
       setPreviewState: (previewDialogueState) => set({ previewDialogueState }),
+      dismissNotification: (id) =>
+        set((state) => ({ notifications: state.notifications.filter((item) => item.id !== id) })),
       reset: () => set(initialState),
     }),
     {
@@ -162,6 +192,8 @@ export const useJarvisStore = create<JarvisState>()(
         appView: state.appView,
         textPromptEnabled: state.textPromptEnabled,
         muted: state.muted,
+        theme: state.theme,
+        voiceGender: state.voiceGender,
       }),
     },
   ),

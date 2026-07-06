@@ -433,27 +433,60 @@ def _error_code_from_text(error_text):
 def _to_process_name(target):
     raw = str(target or "").strip()
     lowered = raw.lower()
-    if lowered in _PROCESS_NAME_OVERRIDES:
-        return _PROCESS_NAME_OVERRIDES[lowered]
     if lowered.startswith("start "):
         raw = raw[6:].strip()
     raw = raw.rstrip(":")
     base = raw.replace("/", "\\").split("\\")[-1]
     if not base:
-        return ""
+        return _PROCESS_NAME_OVERRIDES.get(lowered, "")
     base_lower = base.lower()
     # UWP apps from the scanner are named "<short>.uwp" but don't have a matching
-    # process. Try to find the real running process by matching the short name.
+    # process. A live running-process match is tried FIRST, before the curated
+    # override table below — some UWP hosts (e.g. WhatsApp's real process is
+    # "WhatsApp.Root.exe", not the hardcoded "WhatsApp.exe" guess) drift from
+    # whatever name was true when the override was written, silently breaking
+    # close forever until someone notices and updates the table by hand.
     if base_lower.endswith(".uwp"):
         short = base_lower[:-4]  # strip ".uwp"
         running = _running_process_names_snapshot()
-        # Prefer an exact prefix match (e.g. "spotify" → "spotify.exe")
+        # Note: proc names from psutil already end in ".exe" reliably on
+        # Windows, so slicing off a fixed-length suffix is safe here —
+        # .rstrip(".exe") was a latent bug (rstrip takes a character set, not
+        # a literal suffix, so it also ate a trailing "e" from names like
+        # "chrome.exe" -> "chrom").
+        def _proc_base(proc_name: str) -> str:
+            proc_lower = proc_name.lower()
+            return proc_lower[:-4] if proc_lower.endswith(".exe") else proc_lower
+
+        # Pass 1: catalog short-name is a prefix of (or equals) the real
+        # process base name — e.g. "spotify" -> "spotify.exe".
         for proc in sorted(running):
-            proc_base = proc.rstrip(".exe").rstrip(".EXE").lower() if proc.lower().endswith(".exe") else proc.lower()
+            proc_base = _proc_base(proc)
             if proc_base == short or proc_base.startswith(short):
                 return proc  # already lowercase with .exe from psutil
-        # No match found — return a best-guess so the error message is meaningful
+
+        # Pass 2: fall back to the app's canonical name (from the catalog,
+        # e.g. "WhatsApp") as a second, independent anchor — the scanner's
+        # ".uwp" short name and the real UWP host process can drift apart
+        # over app updates (catalog "whatsappdesktop" vs real process
+        # "whatsapp.root.exe": neither is a prefix of the other, but both
+        # start with the canonical "whatsapp"). Requires the canonical name
+        # to be at least 4 chars to avoid generic-word false positives.
+        canonical = str((_APP_CATALOG.get(target) or {}).get("canonical_name") or "").strip().lower()
+        canonical = re.sub(r"[^a-z0-9]", "", canonical)
+        if len(canonical) >= 4:
+            for proc in sorted(running):
+                proc_base = _proc_base(proc).split(".")[0]
+                if proc_base.startswith(canonical) or canonical.startswith(proc_base):
+                    return proc
+
+        # Not currently running (or no match) — fall back to the curated guess
+        # table, then a naive best-effort guess as the last resort.
+        if lowered in _PROCESS_NAME_OVERRIDES:
+            return _PROCESS_NAME_OVERRIDES[lowered]
         return f"{short}.exe"
+    if lowered in _PROCESS_NAME_OVERRIDES:
+        return _PROCESS_NAME_OVERRIDES[lowered]
     if not base_lower.endswith(".exe"):
         return f"{base}.exe"
     return base

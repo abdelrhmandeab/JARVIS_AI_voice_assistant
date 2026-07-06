@@ -24,6 +24,7 @@ from core.config import (
     STT_ELEVENLABS_ENABLED,
     STT_ELEVENLABS_HTTP2,
     STT_ELEVENLABS_READ_TIMEOUT_SECONDS,
+    STT_ELEVENLABS_SEND_LANGUAGE_CODE,
     STT_ELEVENLABS_STT_MODEL,
     STT_ELEVENLABS_WEAK_TEXT_MIN_CHARS,
     STT_AR_INITIAL_PROMPT,
@@ -36,6 +37,7 @@ from core.config import (
     STT_LANGUAGE_LOCK,
     STT_LOCAL_RACE_ENABLED,
     STT_LOCAL_RACE_MIN_ADVANTAGE,
+    STT_LOCAL_RACE_ON_CLOUD_COOLDOWN,
     STT_MAX_AUDIO_SECONDS,
     STT_MIN_AUDIO_RMS,
     STT_MIN_CONFIDENCE,
@@ -214,6 +216,14 @@ def _language_counts(text: str) -> Dict[str, int]:
     return {"arabic": arabic, "latin": latin, "other_alpha": other_alpha}
 
 
+def _looks_mixed(text: str) -> bool:
+    """True when `text` carries both Arabic and Latin script — the normal
+    shape of Egyptian-Arabic code-switched speech ("افتح Chrome"), not an
+    error case to validate away."""
+    counts = _language_counts(text or "")
+    return counts["arabic"] > 0 and counts["latin"] > 0
+
+
 def _is_allowed_transcript_char(ch: str, *, allow_arabic: bool) -> bool:
     if not ch:
         return True
@@ -277,6 +287,8 @@ def _pick_locked_language(
                         language=None,
                         task="transcribe",
                         condition_on_previous_text=False,
+                        compression_ratio_threshold=2.4,
+                        log_prob_threshold=-1.0,
                     )
                     whisper_detected_lang = _normalize_detected_language(
                         str(getattr(_info, "language", "") or "")
@@ -335,7 +347,7 @@ def _is_weak_transcript_for_language(text: str, locked_lang: str) -> bool:
         return True
     # Mixed Arabic+Latin text is legitimate code-switched speech — never
     # reject it as "weak" due to the presence of the "other" script.
-    if counts["arabic"] > 0 and counts["latin"] > 0:
+    if _looks_mixed(normalized):
         return False
     return any(
         not _is_allowed_transcript_char(ch, allow_arabic=(locked_lang == "ar"))
@@ -357,7 +369,7 @@ def _validate_transcript_language(text: str, locked_lang: str) -> bool:
         # Accept genuinely mixed Arabic+Latin text (Egyptian Arabic code-switching).
         # The dominant-script floor only applies when one script is nearly absent —
         # mixed speech almost never reaches 70% one script, but it is still valid.
-        if counts["arabic"] > 0 and counts["latin"] > 0:
+        if _looks_mixed(normalized):
             return True
         dominant = counts["arabic"] if locked_lang == "ar" else counts["latin"]
         return dominant / float(total_alpha) >= float(STT_VALIDATION_DOMINANT_SCRIPT_MIN)
@@ -822,6 +834,12 @@ def _transcribe_with_faster_whisper_model(
             initial_prompt=initial_prompt,
             condition_on_previous_text=False,
             no_speech_threshold=extra.pop("no_speech_threshold", float(STT_NO_SPEECH_THRESHOLD)),
+            # Standard Whisper hallucination heuristics: reject repetitive/looping
+            # output (compression_ratio) and low-confidence decodes (log_prob) at
+            # decode time, on top of the post-hoc guard below that double-checks
+            # the same thresholds against the finished segments.
+            compression_ratio_threshold=extra.pop("compression_ratio_threshold", 2.4),
+            log_prob_threshold=extra.pop("log_prob_threshold", -1.0),
             temperature=extra.pop("temperature", 0.0),
             **extra,
         )
@@ -949,6 +967,8 @@ def _transcribe_with_elevenlabs(
     audio_file: str,
     locked_lang: str,
     on_partial: Optional[Callable[[str], None]] = None,
+    *,
+    streaming_text: str = "",
 ) -> Dict[str, Any]:
     if is_shutdown_requested():
         raise RuntimeError("STT shutdown requested")
@@ -974,7 +994,6 @@ def _transcribe_with_elevenlabs(
         )
 
     language = "ar" if _normalize_detected_language(locked_lang) == "ar" else "en"
-    language_code = "ara" if language == "ar" else "eng"
 
     endpoint = f"{str(ELEVENLABS_BASE_URL or 'https://api.elevenlabs.io').rstrip('/')}/v1/speech-to-text"
     data = {
@@ -982,8 +1001,11 @@ def _transcribe_with_elevenlabs(
         "tag_audio_events": "false",
         "diarize": "false",
     }
-    if language_code:
-        data["language_code"] = language_code
+    # Forcing a single language_code on already-mixed EN/AR speech biases
+    # Scribe toward one script and drives it to hallucinate/transliterate the
+    # other — omit it so Scribe v2 auto-detects the code-switch instead.
+    if str(STT_ELEVENLABS_SEND_LANGUAGE_CODE).lower() == "always" or not _looks_mixed(streaming_text):
+        data["language_code"] = "ara" if language == "ar" else "eng"
 
     with stage_timer("stt_cloud_call", lang=language):
         with path.open("rb") as audio_handle:
@@ -1184,8 +1206,14 @@ def _transcribe_with_hybrid_elevenlabs(
     # comparing routability rather than only language/script validation.
     local_race_future = None
     local_race_executor = None
+    # Race local Whisper unconditionally only when explicitly enabled; otherwise
+    # only race while cloud is unhealthy (on cooldown) — the local fallback is
+    # already about to run in that state, so the race is nearly free there.
+    should_local_race = bool(STT_LOCAL_RACE_ENABLED) or (
+        bool(STT_LOCAL_RACE_ON_CLOUD_COOLDOWN) and _elevenlabs_on_cooldown()
+    )
     if (
-        bool(STT_LOCAL_RACE_ENABLED)
+        should_local_race
         and bool(STT_ELEVENLABS_ENABLED)
         and cloud_allowed
         and cloud_lang in {"ar", "en"}
@@ -1229,6 +1257,7 @@ def _transcribe_with_hybrid_elevenlabs(
                     audio_file,
                     locked_lang=cloud_lang,
                     on_partial=on_partial,
+                    streaming_text=streaming_text,
                 )
                 validated = _validated_backend_result(
                     primary,
@@ -1276,13 +1305,22 @@ def _transcribe_with_hybrid_elevenlabs(
                         best_cloud_mixed = primary
                 else:
                     logger.debug("ElevenLabs STT returned empty transcript; skipping opposite-language cloud retry")
-                if bool(STT_RETRY_OPPOSITE_LANGUAGE) and primary_text and not is_shutdown_requested():
+                # Mixed EN/AR is valid by definition here — retrying with the
+                # opposite language lock is pure wasted latency when the
+                # primary transcript was already code-switched.
+                if (
+                    bool(STT_RETRY_OPPOSITE_LANGUAGE)
+                    and primary_text
+                    and not _looks_mixed(primary_text)
+                    and not is_shutdown_requested()
+                ):
                     retry_lang = _opposite_language(cloud_lang)
                     with stage_timer("stt_retry", lang=retry_lang):
                         retry = _transcribe_with_elevenlabs(
                             audio_file,
                             locked_lang=retry_lang,
                             on_partial=on_partial,
+                            streaming_text=streaming_text,
                         )
                     retry_validated = _validated_backend_result(
                         retry,
@@ -1350,7 +1388,12 @@ def _transcribe_with_hybrid_elevenlabs(
     else:
         logger.debug("Local STT returned empty transcript; skipping opposite-language retry")
     errors.append("local:invalid_language")
-    if bool(STT_RETRY_OPPOSITE_LANGUAGE) and local_text and not is_shutdown_requested():
+    if (
+        bool(STT_RETRY_OPPOSITE_LANGUAGE)
+        and local_text
+        and not _looks_mixed(local_text)
+        and not is_shutdown_requested()
+    ):
         retry_lang = _opposite_language(local_lang)
         with stage_timer("stt_retry", lang=retry_lang):
             retry = _transcribe_with_faster_whisper(

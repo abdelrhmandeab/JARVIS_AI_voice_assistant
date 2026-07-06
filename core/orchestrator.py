@@ -54,14 +54,6 @@ from core.config import (
     FOLLOWUP_CHIME_ENABLED,
     FOLLOWUP_ENABLED,
     SENSITIVE_CONFIRM_MODE,
-    GREETING_ENABLED,
-    GREETING_LANGUAGE,
-    GREETING_TEXT_AR,
-    GREETING_TEXT_EN,
-    GREETING_PRESPEAK_SETTLE_MS,
-    GREETING_DEVICE_WARMUP,
-    GREETING_BLOCKING,
-    LLM_PREWARM_BEFORE_GREETING,
     LLM_AUTO_SELECT_MODEL,
     LLM_MODEL,
     LLM_OLLAMA_AUTOSTART,
@@ -1525,69 +1517,6 @@ def _play_follow_up_chime() -> None:
         pass  # Non-Windows or winsound absent — silent fallback
 
 
-def _warmup_output_device() -> None:
-    """Play ~80 ms of silence at 24000 Hz to open the sounddevice output stream.
-
-    Edge-TTS outputs at 24 kHz. sounddevice opens a new stream on every sd.play()
-    call; the first open on Windows takes ~100-200 ms and clips the first audio
-    chunk. Playing silence at the same sample rate pre-opens the stream so the
-    greeting starts cleanly.
-    """
-    try:
-        import numpy as np
-        import sounddevice as sd
-        sr = 24000  # Match Edge-TTS output rate
-        silence = np.zeros(int(sr * 0.08), dtype=np.float32)
-        sd.play(silence, samplerate=sr, blocking=True)
-        sd.wait()  # Ensure stream is fully open and flushed before returning
-    except Exception:
-        pass  # Non-fatal — if sounddevice is absent, skip warmup
-
-
-def _speak_startup_greeting():
-    """Speak the configured bilingual greeting synchronously (blocking).
-
-    Called as the strict last step before the wake loop so the greeting plays
-    fully before Jarvis starts listening. Fires after every prewarm thread is
-    already launched so there is no audio-device contention.
-    """
-    if not GREETING_ENABLED or not speech_engine.is_enabled():
-        return False
-
-    configured_language = str(GREETING_LANGUAGE or "en").strip().lower()
-    if configured_language == "auto":
-        language = "ar" if str(STT_LANGUAGE_HINT or "").strip().lower() == "ar" else "en"
-    else:
-        language = configured_language if configured_language in {"ar", "en"} else "en"
-
-    text = GREETING_TEXT_AR if language == "ar" else GREETING_TEXT_EN
-    text = str(text or "").strip()
-    if not text:
-        return False
-
-    if GREETING_DEVICE_WARMUP:
-        _warmup_output_device()
-
-    if GREETING_PRESPEAK_SETTLE_MS > 0:
-        time.sleep(GREETING_PRESPEAK_SETTLE_MS / 1000.0)
-
-    try:
-        # Force edge-tts (not ElevenLabs) for the greeting: ElevenLabs' extra
-        # network round-trip during startup — while STT/wake models are still
-        # settling — is the source of the greeting audio glitch/stutter.
-        # edge-tts is local-ish (no API key, low first-byte latency) and used
-        # as the fallback everywhere else anyway.
-        started, _ = speech_engine.speak_async(text, language=language, backend="edge_tts")
-        if started and GREETING_BLOCKING:
-            # Block until TTS finishes so the wake loop doesn't start mid-greeting.
-            _wait_for_tts_completion(max_wait=30.0)
-            get_logger("startup").info("Greeting spoken (lang=%s)", language)
-        return bool(started)
-    except Exception as exc:
-        get_logger("startup").warning("Startup greeting failed: %s", exc)
-        return False
-
-
 def _calibrate_baseline_noise():
     """Measure ambient noise floor before any TTS plays; used for echo threshold."""
     logger.debug("Baseline noise calibration skipped (echo cancel disabled for STT debugging).")
@@ -1613,12 +1542,8 @@ def _run_startup_prewarm_blocking():
     if SEMANTIC_ROUTER_ENABLED:
         target = critical_tasks if PREWARM_SEMANTIC_ROUTER_BLOCKING else background_tasks
         target.append(("semantic_router", _prewarm_semantic_router))
-    # When LLM_PREWARM_BEFORE_GREETING is set, the full LLM runtime setup
-    # (Ollama start + model select + model load) is done on the pre-greeting
-    # daemon thread launched in run() — don't double-schedule it here.
-    if not (LLM_PREWARM_BEFORE_GREETING and not PREWARM_LLM_BLOCKING):
-        llm_target = critical_tasks if PREWARM_LLM_BLOCKING else background_tasks
-        llm_target.append(("llm", _prepare_llm_runtime))
+    llm_target = critical_tasks if PREWARM_LLM_BLOCKING else background_tasks
+    llm_target.append(("llm", _prepare_llm_runtime))
     if APP_SCAN_ON_STARTUP:
         background_tasks.append(("app_scan", _startup_app_scan))
     if KB_AUTO_SYNC_ENABLED:
@@ -1795,22 +1720,6 @@ def run():
     from llm.ollama_client import llm_cancel_event
     coordinator.attach_llm_cancel_event(llm_cancel_event)
 
-    # Fire full LLM runtime setup (Ollama + model select + model load) on a
-    # daemon thread so it runs concurrently with the greeting audio. The greeting
-    # takes ~2-3 s to speak, which hides most of the model cold-start latency.
-    # This is the ONLY path that sets up the LLM runtime when
-    # LLM_PREWARM_BEFORE_GREETING=true (it's excluded from prewarm task lists).
-    if LLM_PREWARM_BEFORE_GREETING and not PREWARM_LLM_BLOCKING:
-        _llm_prewarm_thread = threading.Thread(
-            target=_prepare_llm_runtime,
-            name="jarvis-llm-prewarm-pre-greeting",
-            daemon=True,
-        )
-        _llm_prewarm_thread.start()
-
-    # Greeting is the strict last step before listening — plays fully (blocking)
-    # so the wake loop doesn't start while TTS is still holding the mic device.
-    _speak_startup_greeting()
     get_logger("startup").info("Jarvis ready — listening.")
 
     prime_llm_response_cache_async()
