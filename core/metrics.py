@@ -998,18 +998,22 @@ def log_warmup_table(rows) -> None:
 def log_turn_summary(total, parts: dict, **fields) -> None:
     if not TIMING_LOG_ENABLED:
         return
+    # Fixed-width name + value so "wake / rec / stt / route / llm / tts" line
+    # up across turns in the terminal instead of drifting with each stage's
+    # digit count (e.g. "0.45" vs "12.34").
     ordered = ("wake", "rec", "stt", "route", "llm", "tts")
+
     def _display_duration(value):
         duration = max(0.0, float(value or 0.0))
         return max(0.01, duration) if duration > 0.0 else 0.0
 
     breakdown = " ".join(
-        f"{name} {_display_duration(parts.get(name)):.2f}"
+        f"{name:<5}{_display_duration(parts.get(name)):>5.2f}"
         for name in ordered
     )
     suffix = " ".join(f"{key}={value}" for key, value in fields.items() if value not in (None, ""))
     get_logger("timing").info(
-        "⏱ turn wake→speak %.2fs │ %s%s",
+        "⏱ turn wake→speak %6.2fs │ %s%s",
         max(0.0, float(total or 0.0)),
         breakdown,
         f" │ {suffix}" if suffix else "",

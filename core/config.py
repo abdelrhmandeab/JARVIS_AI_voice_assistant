@@ -1016,5 +1016,8 @@ LOG_FILE_LEVEL = _env("JARVIS_LOG_FILE_LEVEL", "DEBUG")
 LOG_ROTATE_MAX_BYTES = _env_int("JARVIS_LOG_ROTATE_MAX_BYTES", 2_000_000)
 LOG_ROTATE_BACKUPS = _env_int("JARVIS_LOG_ROTATE_BACKUPS", 3)
 TIMING_LOG_ENABLED = _env_bool("JARVIS_TIMING_LOG_ENABLED", True)
+# Color-coded console levels, aligned logger names, and per-turn separators.
+# The on-disk log file is never affected (always plain text, no ANSI).
+LOG_PRETTY = _env_bool("JARVIS_LOG_PRETTY", True)
 
 
