@@ -31,3 +31,15 @@ export function useResolvedTheme(): ResolvedTheme {
 
   return resolved;
 }
+
+/** Stamps the resolved theme onto <html data-theme="..."> so CSS (the
+ * @custom-variant dark selector in index.css, and any [data-theme] rules)
+ * reacts to the user's in-app choice instead of only prefers-color-scheme. */
+export function useApplyTheme(): void {
+  const resolved = useResolvedTheme();
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.documentElement.setAttribute('data-theme', resolved);
+  }, [resolved]);
+}

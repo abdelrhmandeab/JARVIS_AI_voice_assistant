@@ -75,7 +75,6 @@ from core.config import (
     RESPONSE_MODE_FEATURE_ENABLED,
     TONE_SENSITIVE_NEUTRAL_ENABLED,
     TONE_ADAPTATION_ENABLED,
-    LLM_BACKEND,
     SENSITIVE_CONFIRM_MODE,
     FILE_HUMANIZE_PATHS,
     FILE_SPOKEN_RESULTS_MAX,
@@ -106,7 +105,7 @@ from core.response_shaper import response_shaper
 from core.session_memory import session_memory
 from core.voice_normalizer import normalize_for_voice, normalize_weather_block
 from llm.ollama_client import ask_llm_streaming, get_runtime_lightweight_num_ctx, get_runtime_model_tier, get_runtime_num_ctx
-from llm.prompt_builder import build_prompt_package, build_lightweight_prompt, build_tool_augmented_prompt, build_claude_messages
+from llm.prompt_builder import build_prompt_package, build_lightweight_prompt, build_tool_augmented_prompt
 from tools.live_data import gather_live_data
 from utils.language_detector import detect_language
 
@@ -164,7 +163,7 @@ from os_control.sysinfo_ops import get_battery_status, get_system_info
 from os_control.email_ops import draft_email
 from os_control.calendar_ops import create_calendar_event
 from os_control.settings_ops import open_settings_page
-from llm.tool_caller import call_tool_tier, call_tool_tier_claude, tool_calls_to_parsed_commands
+from llm.tool_caller import call_tool_tier, tool_calls_to_parsed_commands
 
 
 _JOB_QUEUE_EXECUTOR_READY = False
@@ -232,7 +231,6 @@ _PARSER_FASTPATH_INTENTS = {
     "OBSERVABILITY_REPORT",
     "METRICS_REPORT",
     "DEMO_MODE",
-    "OS_CONFIRMATION",
     "OS_ROLLBACK",
 }
 
@@ -855,9 +853,6 @@ def _is_sensitive_command(parsed):
     action = str(getattr(parsed, "action", "") or "").strip().lower()
     args = dict(getattr(parsed, "args", {}) or {})
 
-    if intent == "OS_CONFIRMATION":
-        return True
-
     if intent == "OS_APP_CLOSE":
         return True
 
@@ -1396,7 +1391,6 @@ def _should_bypass_pending_clarification(parsed, pending_payload=None, source_te
 
 # Maps intents to their required permission key.
 _PERMISSION_MAP = {
-    "OS_CONFIRMATION": "confirmation",
     "OS_ROLLBACK": "rollback",
     "OS_FILE_SEARCH": "file_search",
     "OS_FILE_SEARCH_ADVANCED": "file_search",
@@ -3093,37 +3087,23 @@ def _rewrite_followup_command(text, language="en"):
                 "followup_message": render_template("pin_required_prompt", language),
             }
 
+    # Note: pending_token is only ever "" or "pin_required" (the PIN system is
+    # the sole confirmation mechanism now), and every pattern matched below is
+    # already covered by the pin_required branch above — so once a PIN really
+    # is pending, these always fall through to the "no pending token" replies.
     yes_with_factor_match = _YES_WITH_FACTOR_RE.match(raw) or _AR_YES_WITH_FACTOR_RE.match(raw)
-    if yes_with_factor_match:
-        if pending_token:
-            second_factor = yes_with_factor_match.group(1).strip()
-            return (
-                f"confirm {pending_token} {second_factor}",
-                {"followup_rewrite": "confirmation_implicit_yes", "token": pending_token},
-            )
+    if yes_with_factor_match and not pending_token:
         return raw, {
             "followup_blocked": True,
             "followup_message": render_template("missing_pending_confirmation", language),
         }
-
-    if normalized in _YES_CONFIRM_FOLLOWUP_TEXTS and pending_token:
-        return f"confirm {pending_token}", {"followup_rewrite": "confirmation_implicit_yes", "token": pending_token}
 
     factor_match = _CONFIRM_IT_WITH_FACTOR_RE.match(raw) or _AR_CONFIRM_IT_WITH_FACTOR_RE.match(raw)
-    if factor_match:
-        if pending_token:
-            second_factor = factor_match.group(1).strip()
-            return (
-                f"confirm {pending_token} {second_factor}",
-                {"followup_rewrite": "confirmation", "token": pending_token},
-            )
+    if factor_match and not pending_token:
         return raw, {
             "followup_blocked": True,
             "followup_message": render_template("missing_pending_confirmation", language),
         }
-
-    if normalized in _CONFIRM_FOLLOWUP_TEXTS and pending_token:
-        return f"confirm {pending_token}", {"followup_rewrite": "confirmation", "token": pending_token}
 
     if normalized in _CONFIRM_FOLLOWUP_TEXTS and not pending_token:
         return raw, {
@@ -3508,14 +3488,8 @@ def _update_short_term_context(parsed, success, message, meta):
         # PIN-pending flow: reuse the pending-confirmation slot as a flag
         # (no real token is ever stored or spoken).
         session_memory.set_pending_confirmation_token(token)
-    elif token:
-        session_memory.set_pending_confirmation_token(token)
-    elif parsed.intent in {"OS_CONFIRMATION", "OS_PIN_CONFIRM"} and success:
+    elif parsed.intent == "OS_PIN_CONFIRM" and success:
         session_memory.clear_pending_confirmation_token()
-    elif parsed.intent == "OS_CONFIRMATION" and not success:
-        lowered_message = str(message or "").lower()
-        if "not found or expired" in lowered_message or "token expired" in lowered_message:
-            session_memory.clear_pending_confirmation_token()
     elif parsed.intent == "OS_PIN_CONFIRM" and not success:
         lowered_message = str(message or "").lower()
         if "wrong pin" not in lowered_message:
@@ -3562,7 +3536,7 @@ def _update_short_term_context(parsed, success, message, meta):
         if path:
             session_memory.set_last_file(path)
 
-    if parsed.intent == "OS_CONFIRMATION" and success:
+    if parsed.intent == "OS_PIN_CONFIRM" and success:
         operation = str(meta.get("operation") or "").strip()
         if operation == "close_app":
             app_name = str(meta.get("target") or meta.get("process_name") or "").strip()
@@ -3850,25 +3824,6 @@ def _dispatch(parsed, *, allow_batch=True, allow_job_queue=True, allow_llm=True,
             render_template("dry_run_action_blocked", language, description=description),
             {"dry_run": True, "intent": parsed.intent, "action": action_name},
         )
-
-    if parsed.intent == "OS_CONFIRMATION":
-        token = parsed.args.get("token")
-        second_factor = parsed.args.get("second_factor")
-        ok, message, payload = confirmation_manager.confirm_with_second_factor(token, second_factor)
-        if not ok:
-            if "Second factor required" in message and token:
-                return (
-                    False,
-                    render_template(
-                        "confirmation_failed_with_usage",
-                        language,
-                        message=message,
-                        token=token,
-                    ),
-                    {},
-                )
-            return False, render_template("confirmation_failed", language, message=message), {}
-        return _execute_confirmed_payload(payload)
 
     if parsed.intent == "OS_PIN_CONFIRM":
         spoken_pin = str(parsed.args.get("pin") or "")
@@ -4353,44 +4308,19 @@ def _dispatch(parsed, *, allow_batch=True, allow_job_queue=True, allow_llm=True,
             768,
         )
     if not cache_hit:
-        if LLM_BACKEND == "claude":
-            from llm.claude_client import ask_claude_streaming
-            _claude_msgs = build_claude_messages(
-                parsed.raw,
-                response_language=language,
-                use_memory=not use_lightweight,
-                use_kb=not use_lightweight,
-                tier=get_runtime_model_tier(),
+        response = (
+            ask_llm_streaming(
+                package["prompt"],
+                on_sentence=_stream_callback,
+                num_ctx=llm_num_ctx,
+                is_arabic=(language == "ar"),
             )
-            response = (
-                ask_claude_streaming(
-                    _claude_msgs["system"],
-                    _claude_msgs["user"],
-                    on_sentence=_stream_callback,
-                    is_arabic=(language == "ar"),
-                    prior_messages=_claude_msgs.get("prior_messages"),
-                )
-                or ""
-            ).strip()
-            _claude_kb_sources = _claude_msgs.get("kb_sources", [])
-            if LLM_APPEND_SOURCE_CITATIONS and _claude_kb_sources:
-                response += _format_source_citations(_claude_kb_sources)
-            if cache_eligible and response:
-                _cache_put_llm_response(parsed.raw, language, response, package.get("tier"))
-        else:
-            response = (
-                ask_llm_streaming(
-                    package["prompt"],
-                    on_sentence=_stream_callback,
-                    num_ctx=llm_num_ctx,
-                    is_arabic=(language == "ar"),
-                )
-                or ""
-            ).strip()
-            if LLM_APPEND_SOURCE_CITATIONS and package["kb_sources"]:
-                response += _format_source_citations(package["kb_sources"])
-            if cache_eligible and response:
-                _cache_put_llm_response(parsed.raw, language, response, package.get("tier"))
+            or ""
+        ).strip()
+        if LLM_APPEND_SOURCE_CITATIONS and package["kb_sources"]:
+            response += _format_source_citations(package["kb_sources"])
+        if cache_eligible and response:
+            _cache_put_llm_response(parsed.raw, language, response, package.get("tier"))
 
     _log_llm_language_mismatch(response, language)
     return (
@@ -5236,11 +5166,7 @@ def route_command(
 
     if parsed is None and not explanatory_llm_query and _should_try_tool_tier(original_text, parser_candidate):
         nlu_meta["tool_tier_attempted"] = True
-        tool_result = (
-            call_tool_tier_claude(original_text)
-            if LLM_BACKEND == "claude"
-            else call_tool_tier(original_text, model_name=None)
-        )
+        tool_result = call_tool_tier(original_text, model_name=None)
         raw_tool_calls = tool_result.get("tool_calls") or []
         parsed_tool_commands = tool_calls_to_parsed_commands(raw_tool_calls, original_text)
         if parsed_tool_commands:

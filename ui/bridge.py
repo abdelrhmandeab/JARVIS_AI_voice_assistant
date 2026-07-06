@@ -239,7 +239,11 @@ class JarvisBridge:
             key = str(message.get("key") or "")
             value = message.get("value")
             logger.info("UI bridge setting_update received: key=%s", key)
-            await asyncio.to_thread(self._apply_setting_update, key, value)
+            error = await asyncio.to_thread(self._apply_setting_update, key, value)
+            if error:
+                await websocket.send_text(
+                    to_json(make_event(EVENT_ERROR, message=error, recoverable=True))
+                )
             await websocket.send_text(to_json(self._config_event()))
             return
 
@@ -256,8 +260,16 @@ class JarvisBridge:
 
         logger.info("UI bridge ignored unknown command type: %s", command_type)
 
-    def _apply_setting_update(self, key: str, value) -> None:
+    def _apply_setting_update(self, key: str, value) -> "str | None":
         try:
+            if key == "JARVIS_SECOND_FACTOR_PIN":
+                pin = str(value or "").strip()
+                if config.set_second_factor_pin(pin):
+                    config.persist_env_var("JARVIS_SECOND_FACTOR_PIN", pin)
+                    logger.info("Destructive-command PIN updated via dashboard (len=%d)", len(pin))
+                    return None
+                logger.info("UI bridge setting_update rejected invalid PIN (len=%d)", len(pin))
+                return "PIN must be 4-8 digits."
             if key in {"JARVIS_STT_LANGUAGE_HINT", "language", "stt_language"}:
                 from audio.stt import set_runtime_stt_settings
 
@@ -296,6 +308,15 @@ class JarvisBridge:
                 from core.persona import persona_manager
 
                 persona_manager.set_profile(str(value or ""))
+            elif key == "JARVIS_TTS_VOICE_PROFILE":
+                from audio.tts import speech_engine
+
+                profile_name = str(value or "").strip()
+                if speech_engine.set_voice_profile(profile_name):
+                    logger.info("TTS voice profile set to '%s' via dashboard", profile_name)
+                else:
+                    logger.info("UI bridge setting_update ignored (unknown voice profile): %s", value)
+                    return f"Unknown voice profile: {profile_name}"
             else:
                 logger.info("UI bridge setting_update ignored (unknown key): %s", key)
         except Exception:
@@ -354,6 +375,18 @@ class JarvisBridge:
         except Exception:
             stt_language_hint = "auto"
 
+        try:
+            pin_set = config.get_second_factor_pin() != "1234"
+        except Exception:
+            pin_set = False
+
+        try:
+            from audio.tts import speech_engine
+
+            voice_profile = speech_engine.get_voice_profile_name()
+        except Exception:
+            voice_profile = ""
+
         values = {
             "model": model,
             "model_tier": "auto" if bool(getattr(config, "LLM_AUTO_SELECT_MODEL", False)) else "configured",
@@ -363,6 +396,8 @@ class JarvisBridge:
             "stt_language_hint": stt_language_hint,
             "tts_backend": getattr(config, "TTS_DEFAULT_BACKEND", ""),
             "persona": persona,
+            "voice_profile": voice_profile,
+            "pin_set": pin_set,
         }
         return make_event(EVENT_CONFIG, values=values)
 

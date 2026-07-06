@@ -2,7 +2,6 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from core.config import CONFIRMATION_TOKEN_BYTES, CONFIRMATION_TOKEN_MIN_HEX_LEN
 from nlp.codeswitching import convert_arabic_numerals, normalize_codeswitched, normalize_arabic_preserve_digits
 from os_control.path_resolver import (
     DRIVE_ALIASES as _PATH_RESOLVER_DRIVE_ALIASES,
@@ -252,9 +251,6 @@ _NUMBER_TENS = {
     "ثمانين": 80,
     "تسعين": 90,
 }
-_CONFIRMATION_TOKEN_MAX_HEX_LEN = max(int(CONFIRMATION_TOKEN_MIN_HEX_LEN), int(CONFIRMATION_TOKEN_BYTES) * 2)
-
-
 _TRAILING_PUNCT_RE = re.compile(r"[.,،؟?!]+$")
 
 
@@ -2998,17 +2994,6 @@ _REGEX_TABLE = [
         "JOB_QUEUE_COMMAND",
         "list",
         lambda m: _parse_job_list_args(m),
-    ),
-    # Confirmation
-    (
-        re.compile(
-            rf"^(?:confirm|\u062a\u0627\u0643\u064a\u062f|\u062a\u0623\u0643\u064a\u062f)\s+([0-9a-f]{{{CONFIRMATION_TOKEN_MIN_HEX_LEN},{_CONFIRMATION_TOKEN_MAX_HEX_LEN}}})(?:\s+(?:with\s+)?(.+))?$",
-            re.IGNORECASE,
-        ),
-        True,
-        "OS_CONFIRMATION",
-        "",
-        lambda m: {"token": m.group(1).lower(), "second_factor": (m.group(2) or "").strip() or None},
     ),
     # File search
     (

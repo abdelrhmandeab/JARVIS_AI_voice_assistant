@@ -48,7 +48,7 @@ export function Chip({
       onClick={onClick}
       className={`rounded border px-2 py-1 transition-opacity hover:opacity-90 ${
         active
-          ? 'border-cyan-500/40 bg-cyan-400/15 text-cyan-800 dark:border-cyan-200 dark:bg-cyan-200/18 dark:text-cyan-50'
+          ? 'border-cyan-600 bg-cyan-500/15 text-cyan-800 dark:border-cyan-200 dark:bg-cyan-200/18 dark:text-cyan-50'
           : 'border-black/[0.08] bg-black/[0.04] text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-white/70'
       } ${className}`}
     >

@@ -19,7 +19,7 @@ export function Toggle({ label, checked, onChange, disabled = false }: TogglePro
       <span
         className={`relative h-6 w-11 shrink-0 rounded-full border transition ${
           checked
-            ? 'border-[#8EEBFF]/55 bg-[#8EEBFF]/28'
+            ? 'border-[#0F8FB8]/55 bg-[#0F8FB8]/25 dark:border-[#8EEBFF]/55 dark:bg-[#8EEBFF]/28'
             : 'border-black/15 bg-black/[0.06] dark:border-white/14 dark:bg-white/[0.06]'
         }`}
       >

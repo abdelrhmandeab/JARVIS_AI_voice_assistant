@@ -32,6 +32,8 @@ from core.config import (
     STT_BEAM_SIZE_SHORT,
     STT_BEAM_SIZE_SHORT_THRESHOLD_SECONDS,
     STT_EN_INITIAL_PROMPT,
+    STT_ENGLISH_BEAM_SIZE,
+    STT_ENGLISH_WHISPER_MODEL,
     STT_FORBID_OTHER_LANGUAGES,
     STT_LANGUAGE_HINT,
     STT_LANGUAGE_LOCK,
@@ -578,11 +580,24 @@ def _shutdown_result(*, backend: str = _LOCAL_BACKEND, method: str = _LOCAL_BACK
 
 
 def _manual_whisper_runtime() -> Dict[str, Any]:
+    # The retained local whisper path only ever serves English turns
+    # (STT_ENGLISH_ENGINE routing keeps auto/ar on Scribe v2), so default to an
+    # English-only (*.en) model sized to the current hardware. JARVIS_WHISPER_MODEL
+    # remains an explicit override for anyone who wants a specific model.
     model = str(WHISPER_MODEL or "auto").strip() or "auto"
     device = str(WHISPER_DEVICE or "auto").strip().lower() or "auto"
     compute_type = str(WHISPER_COMPUTE_TYPE or "auto").strip().lower() or "auto"
     if model == "auto":
-        runtime = dict(hardware_detect.recommend_whisper_runtime())
+        english_model = str(STT_ENGLISH_WHISPER_MODEL or "auto").strip() or "auto"
+        if english_model == "auto":
+            runtime = dict(hardware_detect.recommend_english_whisper_runtime())
+        else:
+            base = dict(hardware_detect.recommend_english_whisper_runtime())
+            runtime = {
+                "model": english_model,
+                "device": base.get("device", "cpu"),
+                "compute_type": base.get("compute_type", "int8"),
+            }
     else:
         runtime = {
             "model": model,
@@ -753,6 +768,22 @@ def _safe_partial_emit(on_partial: Optional[Callable[[str], None]], text: str) -
         pass
 
 
+# Quality-first decode settings for the English-only local path. English is
+# monolingual here (STT_ENGLISH_ENGINE routing keeps auto/ar on Scribe v2), so
+# we can afford accuracy over speed to make faster-whisper rival Scribe on English.
+_ENGLISH_WHISPER_KWARGS: Dict[str, Any] = {
+    "beam_size": int(STT_ENGLISH_BEAM_SIZE),
+    "best_of": 5,
+    "temperature": [0.0, 0.2, 0.4],       # fallback ladder to escape bad greedy paths
+    "vad_filter": True,
+    "vad_parameters": {"threshold": 0.5, "min_silence_duration_ms": 300},
+    "condition_on_previous_text": False,  # stops runaway hallucination
+    "compression_ratio_threshold": 2.4,
+    "log_prob_threshold": -1.0,
+    "no_speech_threshold": 0.6,
+}
+
+
 def _transcribe_with_faster_whisper_model(
     model: Any,
     audio_file: str,
@@ -780,7 +811,10 @@ def _transcribe_with_faster_whisper_model(
             duration_seconds=duration_seconds,
         )
 
-    extra: Dict[str, Any] = dict(whisper_kwargs or {})
+    extra: Dict[str, Any] = (
+        dict(_ENGLISH_WHISPER_KWARGS) if whisper_language == "en" else {}
+    )
+    extra.update(whisper_kwargs or {})
     if lock_requested:
         extra.pop("language", None)
         extra.pop("task", None)

@@ -4,6 +4,7 @@ import { Overlay } from './components/overlay/Overlay';
 import { useJarvisSocket } from './hooks/useJarvisSocket';
 import { useJarvisStore } from './stores/jarvisStore';
 import { isTauri } from './lib/app';
+import { useApplyTheme } from './lib/theme';
 
 // Under Tauri each OS window owns one view (label "overlay" | "dashboard").
 // In the browser there is one window, so fall back to the in-app appView toggle.
@@ -17,6 +18,7 @@ function tauriWindowView(): 'overlay' | 'dashboard' | null {
 }
 
 export default function App() {
+  useApplyTheme();
   const { send } = useJarvisSocket();
   const appView = useJarvisStore((state) => state.appView);
   const view = tauriWindowView() ?? appView;

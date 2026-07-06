@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 
@@ -9,9 +10,56 @@ from core.config import (
     LOG_CONSOLE_LEVEL,
     LOG_FILE,
     LOG_FILE_LEVEL,
+    LOG_PRETTY,
     LOG_ROTATE_BACKUPS,
     LOG_ROTATE_MAX_BYTES,
 )
+
+
+def _enable_windows_vt_mode() -> bool:
+    """Best-effort: turn on ANSI escape processing in the Windows console.
+
+    Windows 10+ consoles support VT sequences once ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    is set on the output handle; older consoles (or non-tty output, e.g. redirected
+    to a file) just keep printing the raw escape codes, so callers should only rely
+    on this after confirming isatty().
+    """
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE (StreamHandler -> sys.stderr
+        # shares the same console, but the console mode is a single per-console
+        # setting, so enabling it via either standard handle applies to both).
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        new_mode = mode.value | 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        return bool(kernel32.SetConsoleMode(handle, new_mode))
+    except Exception:
+        return False
+
+
+class _ColorConsoleFormatter(logging.Formatter):
+    """Color-coded, aligned console formatter. File logs stay plain (no ANSI)."""
+
+    COLORS = {
+        "DEBUG": "\033[2;37m",
+        "INFO": "\033[36m",
+        "WARNING": "\033[33m",
+        "ERROR": "\033[31m",
+        "CRITICAL": "\033[1;41m",
+    }
+    RESET = "\033[0m"
+    DIM = "\033[2m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = self.COLORS.get(record.levelname, "")
+        ts = f"{self.DIM}{self.formatTime(record, '%H:%M:%S')}{self.RESET}"
+        name = f"{record.name:<14.14}"
+        return f"{ts} {color}{record.levelname:<7}{self.RESET} {self.DIM}{name}{self.RESET} {record.getMessage()}"
 
 
 def _level(value, default):
@@ -66,7 +114,10 @@ if not logger.handlers:
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(console_level)
-    console_handler.setFormatter(formatter)
+    _use_color = bool(LOG_PRETTY) and hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+    if _use_color:
+        _use_color = _enable_windows_vt_mode()
+    console_handler.setFormatter(_ColorConsoleFormatter() if _use_color else formatter)
 
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
@@ -80,6 +131,17 @@ def get_logger(component: str) -> logging.Logger:
 
 def section(title: str) -> None:
     logger.info("──────── %s ────────", str(title or "").strip())
+
+
+def turn_separator(turn: int, **fields) -> None:
+    """Log a compact rule at the start of each voice turn so the terminal
+    reads as conversation blocks. Gated behind JARVIS_LOG_PRETTY (default on)
+    so CI/file logs stay uncluttered when it's turned off.
+    """
+    if not LOG_PRETTY:
+        return
+    suffix = " ".join(f"{key}={value}" for key, value in fields.items() if value not in (None, ""))
+    logger.info("────── turn ⸸ %d%s ──────", int(turn), f" {suffix}" if suffix else "")
 
 
 def kv(component: str, **pairs) -> None:

@@ -285,19 +285,14 @@ STT_BEAM_SIZE_SHORT_THRESHOLD_SECONDS = max(
 STT_NO_SPEECH_THRESHOLD = max(0.0, min(1.0, _env_float("JARVIS_STT_NO_SPEECH_THRESHOLD", 0.70)))
 STT_MIN_AUDIO_RMS = max(0.0, _env_float("JARVIS_STT_MIN_AUDIO_RMS", 0.005))
 
+# English-only local whisper tuning (English is the sole language on this path
+# per STT_ENGLISH_ENGINE, so we can afford accuracy-first decode settings).
+# "auto" scales the *.en model with detected hardware (core/hardware_detect.py);
+# small.en/medium.en beat the same-size multilingual model on English and are smaller.
+STT_ENGLISH_WHISPER_MODEL = _env("JARVIS_STT_ENGLISH_WHISPER_MODEL", "auto").strip() or "auto"
+STT_ENGLISH_BEAM_SIZE = max(1, _env_int("JARVIS_STT_ENGLISH_BEAM_SIZE", 5))
+
 # LLM
-# LLM_BACKEND: "claude" uses Anthropic Claude API; "ollama" uses local Ollama (default).
-LLM_BACKEND = str(_env("JARVIS_LLM_BACKEND", "ollama")).strip().lower()
-if LLM_BACKEND not in {"claude", "ollama"}:
-    LLM_BACKEND = "ollama"
-
-# Claude API (used when LLM_BACKEND=claude)
-ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "").strip()
-CLAUDE_DEFAULT_MODEL = _env("JARVIS_CLAUDE_DEFAULT_MODEL", "claude-haiku-4-5").strip()
-CLAUDE_QUALITY_MODEL = _env("JARVIS_CLAUDE_QUALITY_MODEL", "claude-sonnet-4-6").strip()
-CLAUDE_MAX_TOKENS_COMMAND = max(64, _env_int("JARVIS_CLAUDE_MAX_TOKENS_COMMAND", 256))
-CLAUDE_MAX_TOKENS_QUESTION = max(128, _env_int("JARVIS_CLAUDE_MAX_TOKENS_QUESTION", 600))
-
 LLM_MODEL = _env("JARVIS_LLM_MODEL", "qwen3:4b")
 LLM_AUTO_SELECT_MODEL = _env_bool("JARVIS_LLM_AUTO_SELECT", True)
 LLM_FALLBACK_MODELS = tuple(
@@ -775,17 +770,10 @@ POWERSHELL_EXECUTABLE = _env("JARVIS_POWERSHELL_EXECUTABLE", "powershell")
 ACTION_LOG_FILE = _env("JARVIS_ACTION_LOG_FILE", "").strip() or _data_path("logs", "jarvis_actions.log")
 ROLLBACK_DIR_NAME = ".jarvis_rollback"
 CONFIRMATION_TIMEOUT_SECONDS = 45
-# Deprecated: the hex-token confirmation system is retired in favor of a
-# spoken PIN (see SENSITIVE_CONFIRM_MODE below). Kept only for any remaining
-# legacy references during the Phase 1->9 transition; Phase 9 removes them.
-CONFIRMATION_TOKEN_BYTES = max(4, min(32, _env_int("JARVIS_CONFIRMATION_TOKEN_BYTES", 8)))
-CONFIRMATION_TOKEN_MIN_HEX_LEN = max(
-    6,
-    min(
-        CONFIRMATION_TOKEN_BYTES * 2,
-        _env_int("JARVIS_CONFIRMATION_TOKEN_MIN_HEX_LEN", 6),
-    ),
-)
+# The hex-token confirmation system (CONFIRMATION_TOKEN_BYTES/MIN_HEX_LEN) has
+# been fully retired in favor of the spoken PIN (see SENSITIVE_CONFIRM_MODE
+# below). These two remain live: second_factor.py's rate limiter still uses
+# them to throttle PIN attempts.
 CONFIRMATION_MAX_ATTEMPTS_PER_TOKEN = _env_int("JARVIS_CONFIRMATION_MAX_ATTEMPTS_PER_TOKEN", 6)
 CONFIRMATION_LOCKOUT_SECONDS = _env_int("JARVIS_CONFIRMATION_LOCKOUT_SECONDS", 120)
 ALLOW_DESTRUCTIVE_SYSTEM_COMMANDS = False
@@ -796,6 +784,42 @@ SECOND_FACTOR_PIN = _env("JARVIS_SECOND_FACTOR_PIN", "1234")
 SECOND_FACTOR_PASSPHRASE = _env("JARVIS_SECOND_FACTOR_PASSPHRASE", "")
 SECOND_FACTOR_MAX_ATTEMPTS_PER_TOKEN = _env_int("JARVIS_SECOND_FACTOR_MAX_ATTEMPTS_PER_TOKEN", 3)
 SECOND_FACTOR_LOCKOUT_SECONDS = _env_int("JARVIS_SECOND_FACTOR_LOCKOUT_SECONDS", 120)
+
+# Runtime override for the destructive-command PIN, so the dashboard can change
+# it without a restart. os_control/second_factor.py reads the live value via
+# get_second_factor_pin() instead of the frozen SECOND_FACTOR_PIN constant.
+_RUNTIME_OVERRIDES = {"second_factor_pin": SECOND_FACTOR_PIN}
+
+
+def get_second_factor_pin() -> str:
+    return str(_RUNTIME_OVERRIDES.get("second_factor_pin") or SECOND_FACTOR_PIN)
+
+
+def set_second_factor_pin(pin: str) -> bool:
+    pin = str(pin or "").strip()
+    if pin.isdigit() and 4 <= len(pin) <= 8:
+        _RUNTIME_OVERRIDES["second_factor_pin"] = pin
+        return True
+    return False
+
+
+def persist_env_var(key: str, value: str, env_path: str = "") -> None:
+    """Upsert a single key in the .env file without touching the rest of it."""
+    env_path = env_path or str(PROJECT_ROOT / ".env")
+    lines = []
+    found = False
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}\n")
+    with open(env_path, "w", encoding="utf-8") as fh:
+        fh.writelines(lines)
 
 # Spoken-PIN confirmation (Phase 1). Sensitive commands prompt for the PIN
 # instead of a hex token; the next utterance is treated as the PIN.
@@ -973,5 +997,8 @@ LOG_FILE_LEVEL = _env("JARVIS_LOG_FILE_LEVEL", "DEBUG")
 LOG_ROTATE_MAX_BYTES = _env_int("JARVIS_LOG_ROTATE_MAX_BYTES", 2_000_000)
 LOG_ROTATE_BACKUPS = _env_int("JARVIS_LOG_ROTATE_BACKUPS", 3)
 TIMING_LOG_ENABLED = _env_bool("JARVIS_TIMING_LOG_ENABLED", True)
+# Color-coded console levels, aligned logger names, and per-turn separators.
+# The on-disk log file is never affected (always plain text, no ANSI).
+LOG_PRETTY = _env_bool("JARVIS_LOG_PRETTY", True)
 
 

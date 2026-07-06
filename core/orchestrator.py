@@ -84,7 +84,7 @@ from core.config import (
 )
 from core.dialogue_manager import DialogueState, dialogue_manager, notify_follow_up_wake
 from core.intent_confidence import assess_intent_confidence
-from core.logger import get_logger, kv, logger, section
+from core.logger import get_logger, kv, logger, section, turn_separator
 from core.language_gate import detect_supported_language, looks_romanized_arabic
 from core.metrics import (
     get_thread_stage_timing,
@@ -1805,6 +1805,7 @@ def run():
             else:
                 dialogue_manager.transition(DialogueState.LISTENING)
                 logger.info("Wake word detected via %s", wake_source or "unknown")
+            turn_separator(dialogue_manager.conversation_turns, wake=wake_source or "unknown")
             pipeline_started = time.perf_counter()
             with stage_timer("wake_to_stt_start", source=wake_source or "unknown") as wake_to_stt_timing:
                 in_flight = _prune_futures(in_flight)

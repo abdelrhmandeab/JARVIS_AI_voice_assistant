@@ -3,6 +3,11 @@ import type { Language, UICommand } from '../../protocol';
 
 interface PromptInputProps {
   send: (cmd: UICommand) => void;
+  // 'glass' (default) is the always-dark HUD look used by the floating
+  // Overlay window, which never reacts to the theme setting. 'surface' is
+  // theme-aware, for embedding in the Dashboard where the surrounding panel
+  // already flips between light and dark.
+  variant?: 'glass' | 'surface';
 }
 
 const ARABIC_TEXT_PATTERN = /[\u0600-\u06FF]/;
@@ -11,7 +16,7 @@ function detectLanguage(text: string): Language {
   return ARABIC_TEXT_PATTERN.test(text) ? 'ar' : 'en';
 }
 
-export function PromptInput({ send }: PromptInputProps) {
+export function PromptInput({ send, variant = 'glass' }: PromptInputProps) {
   const [text, setText] = useState('');
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -30,6 +35,11 @@ export function PromptInput({ send }: PromptInputProps) {
     setText('');
   };
 
+  const inputClassName =
+    variant === 'surface'
+      ? 'h-10 min-w-0 flex-1 rounded border border-black/10 bg-black/[0.03] px-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-500 focus:border-[#0F8FB8]/70 focus:bg-black/[0.05] dark:border-white/10 dark:bg-white/[0.07] dark:text-white dark:placeholder:text-white/50 dark:focus:border-[#8EEBFF]/70 dark:focus:bg-white/[0.1]'
+      : 'h-10 min-w-0 flex-1 rounded border border-white/10 bg-white/[0.07] px-3 text-sm text-white outline-none transition focus:border-[#8EEBFF]/70 focus:bg-white/[0.1]';
+
   return (
     <form onSubmit={handleSubmit} className="flex min-w-0 flex-1 items-center gap-2">
       <input
@@ -37,7 +47,7 @@ export function PromptInput({ send }: PromptInputProps) {
         value={text}
         onChange={(event) => setText(event.target.value)}
         placeholder="Type a prompt"
-        className="h-10 min-w-0 flex-1 rounded border border-black/[0.08] bg-black/[0.04] px-3 text-sm text-slate-800 placeholder:text-slate-500 outline-none transition focus:border-[#8EEBFF]/70 focus:bg-black/[0.06] dark:border-white/10 dark:bg-white/[0.07] dark:text-white dark:placeholder:text-white/45 dark:focus:bg-white/[0.1]"
+        className={inputClassName}
       />
       <button
         type="submit"

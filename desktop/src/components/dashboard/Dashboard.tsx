@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import type { UICommand, FeatureFlags } from '../../protocol';
 import { backToOverlay, closeApp } from '../../lib/app';
 import { GradientBackground } from '../GradientBackground';
@@ -52,6 +52,20 @@ const voiceOptions: Array<DashboardOption<VoiceGender>> = [
   { label: 'Male', value: 'male' },
   { label: 'Female', value: 'female' },
 ];
+
+// Maps the UI's binary male/female chip onto core.tts_voices.DEFAULT_PROFILES.
+// jarvis_male_calm exists in the engine but isn't exposed here — this chip is
+// intentionally simple; pick the profile directly via JARVIS_TTS_VOICE_PROFILE
+// (e.g. voice diagnostics) for the calmer male variant.
+const VOICE_GENDER_TO_PROFILE: Record<VoiceGender, string> = {
+  male: 'jarvis_male_classic',
+  female: 'jarvis_female_warm',
+};
+const VOICE_PROFILE_TO_GENDER: Record<string, VoiceGender> = {
+  jarvis_male_classic: 'male',
+  jarvis_male_calm: 'male',
+  jarvis_female_warm: 'female',
+};
 
 // Mirrors core.persona.PERSONA_PROFILES exactly so every engine persona is
 // selectable and config.persona always matches an option.
@@ -183,6 +197,67 @@ function Notice({
   );
 }
 
+// Masked numeric PIN field for the Security section. Validates length
+// client-side (4-8 digits) so an obviously bad value never round-trips to the
+// engine; the engine still re-validates and reports a dismissible error if
+// something slips through.
+function SecuritySection({ pinSet, send }: { pinSet: boolean; send: (cmd: UICommand) => void }) {
+  const [pin, setPin] = useState('');
+  const [justUpdated, setJustUpdated] = useState(false);
+
+  const trimmed = pin.trim();
+  const isValid = /^\d{4,8}$/.test(trimmed);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isValid) {
+      return;
+    }
+    send({ type: 'setting_update', key: 'JARVIS_SECOND_FACTOR_PIN', value: trimmed });
+    setPin('');
+    setJustUpdated(true);
+    window.setTimeout(() => setJustUpdated(false), 3000);
+  };
+
+  return (
+    <Section title="Security">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-sm font-medium text-slate-600 dark:text-white/72">Destructive-command PIN</span>
+        <span className="rounded border border-black/10 bg-black/[0.03] px-2 py-1 text-[11px] font-semibold text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-white/70">
+          {pinSet ? 'PIN set ••••' : 'Default PIN (insecure)'}
+        </span>
+      </div>
+      <form onSubmit={handleSubmit} className="flex items-center gap-2">
+        <input
+          type="password"
+          inputMode="numeric"
+          autoComplete="off"
+          value={pin}
+          onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
+          placeholder="New PIN (4-8 digits)"
+          className="h-10 min-w-0 flex-1 rounded border border-black/10 bg-white px-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-500 focus:border-[#0F8FB8]/65 dark:border-white/10 dark:bg-[#111118] dark:text-white dark:placeholder:text-white/40 dark:focus:border-[#8EEBFF]/65"
+        />
+        <button
+          type="submit"
+          disabled={!isValid}
+          className="h-10 shrink-0 rounded border border-[#8EEBFF]/30 bg-[#8EEBFF]/12 px-3 text-sm font-semibold text-[#DDFBFF] transition hover:bg-[#8EEBFF]/18 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Update PIN
+        </button>
+      </form>
+      {justUpdated ? (
+        <p className="text-[11px] font-normal text-emerald-500 dark:text-emerald-300">
+          PIN updated — required immediately for destructive commands, no restart needed.
+        </p>
+      ) : (
+        <p className="text-[11px] font-normal text-slate-500 dark:text-white/45">
+          Required to confirm destructive voice commands (e.g. emptying the recycle bin). Never shown once set.
+        </p>
+      )}
+    </Section>
+  );
+}
+
 export function Dashboard({ send }: DashboardProps) {
   const config = useJarvisStore((state) => state.config);
   const avatarDirection = useJarvisStore((state) => state.avatarDirection);
@@ -205,6 +280,12 @@ export function Dashboard({ send }: DashboardProps) {
 
   const hasConfig = config !== null;
 
+  // The engine's active profile is authoritative once config has arrived;
+  // fall back to the locally persisted preference beforehand so the chip
+  // still shows something sensible before the first config event.
+  const effectiveVoiceGender =
+    (config?.voice_profile && VOICE_PROFILE_TO_GENDER[config.voice_profile]) || voiceGender;
+
   // Locally dismissible "config not arrived" hint, shown as a notification.
   const [configHintDismissed, setConfigHintDismissed] = useState(false);
 
@@ -218,6 +299,11 @@ export function Dashboard({ send }: DashboardProps) {
   const handleMutedChange = (nextMuted: boolean) => {
     setMuted(nextMuted);
     send({ type: 'mute_toggle', muted: nextMuted });
+  };
+
+  const handleVoiceChange = (gender: VoiceGender) => {
+    setVoiceGender(gender);
+    send({ type: 'setting_update', key: 'JARVIS_TTS_VOICE_PROFILE', value: VOICE_GENDER_TO_PROFILE[gender] });
   };
 
   return (
@@ -300,7 +386,7 @@ export function Dashboard({ send }: DashboardProps) {
         <div className="grid gap-3 lg:grid-cols-2">
           <Section title="Text Prompt" className="lg:col-span-2">
             <Toggle label="Enable text prompt" checked={textPromptEnabled} onChange={setTextPromptEnabled} />
-            {textPromptEnabled ? <PromptInput send={send} /> : null}
+            {textPromptEnabled ? <PromptInput send={send} variant="surface" /> : null}
           </Section>
 
           <Section title="Avatar">
@@ -320,11 +406,9 @@ export function Dashboard({ send }: DashboardProps) {
             />
             <div className="grid gap-2">
               <span className="font-semibold text-slate-600 dark:text-white/72">Voice</span>
-              {/* UI-only for now: remembers the preference; the engine will consume
-                  it once TTS voice selection is implemented. */}
-              <ChipGroup value={voiceGender} options={voiceOptions} onChange={setVoiceGender} />
+              <ChipGroup value={effectiveVoiceGender} options={voiceOptions} onChange={handleVoiceChange} />
               <p className="text-[11px] font-normal text-slate-500 dark:text-white/45">
-                Male/female voice — engine support coming soon.
+                Changes the spoken voice on the next response — no restart needed.
               </p>
             </div>
           </Section>
@@ -373,6 +457,8 @@ export function Dashboard({ send }: DashboardProps) {
           <Section title="Audio">
             <Toggle label="Mute microphone and speech" checked={muted} onChange={handleMutedChange} />
           </Section>
+
+          <SecuritySection pinSet={config?.pin_set ?? false} send={send} />
 
           <Section title="Status">
             <dl className="grid gap-3 text-sm">

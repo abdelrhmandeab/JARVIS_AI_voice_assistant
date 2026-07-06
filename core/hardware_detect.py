@@ -121,6 +121,28 @@ def recommend_whisper_runtime():
     }
 
 
+def recommend_english_whisper_runtime():
+    """Recommend an English-only (*.en) faster-whisper model for the current machine.
+
+    *.en models beat the multilingual model of the same size on English and
+    are smaller, so this is used for the English-only realtime STT path.
+    """
+    vram_mb = _detect_cuda_vram_mb()
+    free_ram_mb = detect_free_ram_mb()
+    if vram_mb >= 3000:
+        model, device, compute_type = "medium.en", "cuda", "int8_float16"
+    else:
+        model, device, compute_type = "small.en", "cpu", "int8"
+
+    return {
+        "model": model,
+        "device": device,
+        "compute_type": compute_type,
+        "vram_mb": vram_mb,
+        "free_ram_mb": free_ram_mb,
+    }
+
+
 def recommend_model_tier(ollama_base_url="http://localhost:11434"):
     """Detect hardware and return the recommended model configuration.
 

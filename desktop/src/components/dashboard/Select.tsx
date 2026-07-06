@@ -19,7 +19,7 @@ export function Select({ label, value, options, onChange, disabled = false }: Se
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="h-11 rounded border border-black/[0.08] bg-black/[0.04] px-3 text-slate-800 outline-none transition focus:border-[#8EEBFF]/65 disabled:cursor-not-allowed disabled:opacity-45 dark:border-white/10 dark:bg-[#111118] dark:text-white"
+        className="h-11 rounded border border-black/[0.08] bg-black/[0.04] px-3 text-slate-800 outline-none transition focus:border-[#0F8FB8]/65 disabled:cursor-not-allowed disabled:opacity-45 dark:border-white/10 dark:bg-[#111118] dark:text-white dark:focus:border-[#8EEBFF]/65"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>

@@ -20,6 +20,8 @@ export interface ConfigValues {
   stt_language_hint?: SttLanguageHint;
   tts_backend: string;
   persona: string;
+  pin_set?: boolean;
+  voice_profile?: string;
 }
 
 // Engine -> UI events (discriminated union on "type" field)

@@ -19,5 +19,9 @@ build/
 # Caches
 .jarvis_cache/
 .jarvis_kb/
+.swarm/
 data/
 wake word data/
+
+# Logs
+jarvis.log*
