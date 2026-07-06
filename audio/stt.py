@@ -734,9 +734,17 @@ def preload_critical_model() -> Dict[str, Any]:
     backend = get_runtime_stt_backend()
     local_loaded = bool(_LOCAL_MODEL)
 
-    if backend in {_LOCAL_BACKEND, _HYBRID_BACKEND}:
-        _get_local_whisper_model()
-        local_loaded = True
+    # Only warm whisper eagerly when the current turn could actually use it:
+    # explicit faster_whisper backend, or an English language hint (which
+    # routes to whisper per STT_ENGLISH_ENGINE). Otherwise it lazy-loads on
+    # first English turn instead of costing startup time on a Scribe-only session.
+    should_preload_local = backend == _LOCAL_BACKEND or _runtime_language_hint() == "en"
+    if should_preload_local:
+        try:
+            _get_local_whisper_model()
+            local_loaded = True
+        except Exception as exc:
+            logger.debug("Local whisper preload skipped: %s", exc)
 
     return {
         "backend": backend,
