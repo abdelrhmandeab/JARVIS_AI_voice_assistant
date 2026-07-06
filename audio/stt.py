@@ -59,20 +59,22 @@ _SCRIBE_BACKEND = "elevenlabs_scribe"          # canonical primary backend
 _ELEVENLABS_METHOD = "elevenlabs_stt"
 
 _BACKEND_ALIASES = {
-    _HYBRID_BACKEND: _HYBRID_BACKEND,
-    "hybrid": _HYBRID_BACKEND,
-    "elevenlabs": _HYBRID_BACKEND,
-    "elevenlabs_stt": _HYBRID_BACKEND,
-    "elevenlabs_hybrid": _HYBRID_BACKEND,
+    # Legacy hybrid-cascade names are accepted as input but resolve onto the
+    # clean Scribe v2 path — the cascade itself was retired in Phase 5.
+    _HYBRID_BACKEND: _SCRIBE_BACKEND,
+    "hybrid": _SCRIBE_BACKEND,
+    "elevenlabs": _SCRIBE_BACKEND,
+    "elevenlabs_stt": _SCRIBE_BACKEND,
+    "elevenlabs_hybrid": _SCRIBE_BACKEND,
+    _SCRIBE_BACKEND: _SCRIBE_BACKEND,
+    "scribe": _SCRIBE_BACKEND,
+    "scribe_v2": _SCRIBE_BACKEND,
     _LOCAL_BACKEND: _LOCAL_BACKEND,
     "whisper": _LOCAL_BACKEND,
     "local": _LOCAL_BACKEND,
     "faster-whisper": _LOCAL_BACKEND,
     "faster whisper": _LOCAL_BACKEND,
 }
-# Alias legacy names onto the clean Scribe path. Kept separate from
-# _BACKEND_ALIASES (still resolving to _HYBRID_BACKEND) until Phase 2 rewires
-# the default so the hybrid cascade stays the active path through Phase 1.
 
 _ELEVENLABS_COOLDOWN_UNTIL = 0.0
 _STT_LOG = get_logger("stt")
@@ -129,7 +131,7 @@ def close_cloud_http_client() -> None:
 
 def _normalize_backend_name(name: str) -> str:
     raw = str(name or "").strip().lower()
-    return _BACKEND_ALIASES.get(raw, _HYBRID_BACKEND)
+    return _BACKEND_ALIASES.get(raw, _SCRIBE_BACKEND)
 
 
 _RUNTIME_STT_BACKEND = _normalize_backend_name(STT_BACKEND)
@@ -411,7 +413,7 @@ def _finalize_stt_result(result: Dict[str, Any]) -> Dict[str, Any]:
         status = "error"
 
     call_seconds = max(
-        get_thread_stage_timing("stt_cloud_call"),
+        get_thread_stage_timing("stt_scribe_call"),
         get_thread_stage_timing("stt_local_call"),
     )
     pick_seconds = float(finalized.get("lang_pick_seconds") or get_thread_stage_timing("stt_lang_pick"))

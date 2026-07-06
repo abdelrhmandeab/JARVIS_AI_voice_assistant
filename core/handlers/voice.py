@@ -265,11 +265,14 @@ def _normalize_profile_name(value):
 def _normalize_stt_backend_name(value):
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
-        "hybrid": "hybrid_elevenlabs",
-        "hybrid_elevenlabs": "hybrid_elevenlabs",
-        "elevenlabs": "hybrid_elevenlabs",
-        "eleven": "hybrid_elevenlabs",
-        "arabic_hybrid": "hybrid_elevenlabs",
+        "hybrid": "elevenlabs_scribe",
+        "hybrid_elevenlabs": "elevenlabs_scribe",
+        "elevenlabs": "elevenlabs_scribe",
+        "eleven": "elevenlabs_scribe",
+        "arabic_hybrid": "elevenlabs_scribe",
+        "scribe": "elevenlabs_scribe",
+        "scribe_v2": "elevenlabs_scribe",
+        "elevenlabs_scribe": "elevenlabs_scribe",
         "fw": "faster_whisper",
         "faster": "faster_whisper",
         "local": "faster_whisper",
@@ -277,7 +280,7 @@ def _normalize_stt_backend_name(value):
         "faster_whisper": "faster_whisper",
     }
     normalized = aliases.get(raw, raw)
-    if normalized not in {"hybrid_elevenlabs", "faster_whisper"}:
+    if normalized not in {"elevenlabs_scribe", "faster_whisper"}:
         return ""
     return normalized
 
@@ -846,7 +849,7 @@ def handle(parsed):
         if action == "stt_backend_local":
             requested_backend = "faster_whisper"
         elif action == "stt_backend_hybrid":
-            requested_backend = "hybrid_elevenlabs"
+            requested_backend = "elevenlabs_scribe"
         else:
             requested_backend = args.get("backend", "")
 
@@ -854,7 +857,7 @@ def handle(parsed):
         if not backend:
             return (
                 False,
-                "Unsupported STT backend. Use: hybrid_elevenlabs or faster_whisper.",
+                "Unsupported STT backend. Use: elevenlabs_scribe or faster_whisper.",
                 {},
             )
 

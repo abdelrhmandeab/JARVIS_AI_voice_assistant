@@ -1909,7 +1909,7 @@ _KEYWORD_TABLE = [
     ({"voice quality status", "speech quality status", "tts quality status", "جودة الصوت عاملة ايه"}, "VOICE_COMMAND", "voice_quality_status"),
     ({"voice quality natural", "speech quality natural", "tts quality natural", "natural voice mode", "خلي الصوت طبيعي", "خلّي الصوت طبيعي"}, "VOICE_COMMAND", "voice_quality_set", {"mode": "natural"}),
     ({"voice quality standard", "speech quality standard", "tts quality standard", "robot voice mode", "robotic voice mode", "خلي الصوت عادي", "خلّي الصوت عادي", "خلي الصوت روبوتي"}, "VOICE_COMMAND", "voice_quality_set", {"mode": "standard"}),
-    ({"stt backend hybrid", "speech backend hybrid", "voice stt backend hybrid", "use hybrid stt", "use elevenlabs stt", "set stt backend hybrid", "set stt backend elevenlabs", "محرك الاستماع هجين", "محرك الاستماع اليفن لابس"}, "VOICE_COMMAND", "stt_backend_hybrid"),
+    ({"stt backend hybrid", "speech backend hybrid", "voice stt backend hybrid", "use hybrid stt", "use elevenlabs stt", "use scribe", "use scribe stt", "set stt backend hybrid", "set stt backend elevenlabs", "set stt backend scribe", "محرك الاستماع هجين", "محرك الاستماع اليفن لابس", "استخدم سكرايب"}, "VOICE_COMMAND", "stt_backend_hybrid"),
     ({"stt backend local", "speech backend local", "voice stt backend local", "stt backend whisper", "set stt backend local", "use local stt", "محرك الاستماع محلي", "محرك الاستماع ويسبر"}, "VOICE_COMMAND", "stt_backend_local"),
     ({"wake triggers", "wake triggers list", "list wake triggers", "wake status", "wake mode status", "كلمات التنبيه", "كلمات الصحوة"}, "VOICE_COMMAND", "wake_status"),
     ({"stop speaking", "interrupt speech", "be quiet", "stop talking"}, "VOICE_COMMAND", "interrupt"),
@@ -2344,7 +2344,7 @@ _REGEX_TABLE = [
     # Voice
     (
         re.compile(
-            r"^(?:set\s+)?(?:(?:voice|speech|stt)\s+)?(?:stt|speech)\s+backend(?:\s+to)?\s+(hybrid|elevenlabs?|arabic(?:\s+hybrid)?)$",
+            r"^(?:set\s+)?(?:(?:voice|speech|stt)\s+)?(?:stt|speech)\s+backend(?:\s+to)?\s+(hybrid|elevenlabs?|scribe(?:[_\s]?v2)?|arabic(?:\s+hybrid)?)$",
             re.IGNORECASE,
         ),
         True,
@@ -2364,7 +2364,7 @@ _REGEX_TABLE = [
     ),
     (
         re.compile(
-            r"^(?:ظبط|ظبّط|غير|غيّر|عدل|عدّل|خلي|خلّي)\s+(?:محرك|باكند)?\s*الاستماع(?:\s+على)?\s+(?:هجين|اليفن\s*لابس|elevenlabs?)$",
+            r"^(?:ظبط|ظبّط|غير|غيّر|عدل|عدّل|خلي|خلّي)\s+(?:محرك|باكند)?\s*الاستماع(?:\s+على)?\s+(?:هجين|اليفن\s*لابس|سكرايب|elevenlabs?|scribe)$",
             re.IGNORECASE,
         ),
         True,
