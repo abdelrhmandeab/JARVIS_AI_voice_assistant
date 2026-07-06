@@ -37,13 +37,13 @@ export function PromptInput({ send }: PromptInputProps) {
         value={text}
         onChange={(event) => setText(event.target.value)}
         placeholder="Type a prompt"
-        className="h-10 min-w-0 flex-1 rounded border border-white/10 bg-white/[0.07] px-3 text-sm text-white outline-none transition focus:border-[#8EEBFF]/70 focus:bg-white/[0.1]"
+        className="h-10 min-w-0 flex-1 rounded border border-black/[0.08] bg-black/[0.04] px-3 text-sm text-slate-800 placeholder:text-slate-500 outline-none transition focus:border-[#8EEBFF]/70 focus:bg-black/[0.06] dark:border-white/10 dark:bg-white/[0.07] dark:text-white dark:placeholder:text-white/45 dark:focus:bg-white/[0.1]"
       />
       <button
         type="submit"
         aria-label="Send"
         title="Send"
-        className="grid h-10 w-10 shrink-0 place-items-center rounded border border-[#8EEBFF]/30 bg-[#8EEBFF]/12 text-[#DDFBFF] transition hover:bg-[#8EEBFF]/18"
+        className="grid h-10 w-10 shrink-0 place-items-center rounded border border-[#8EEBFF]/40 bg-[#8EEBFF]/15 text-cyan-700 transition hover:bg-[#8EEBFF]/25 dark:border-[#8EEBFF]/30 dark:bg-[#8EEBFF]/12 dark:text-[#DDFBFF] dark:hover:bg-[#8EEBFF]/18"
       >
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path
