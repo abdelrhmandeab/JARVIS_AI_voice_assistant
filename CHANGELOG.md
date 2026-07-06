@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-06 - Final Pre-Defense Sweep
+
+### Removed
+
+- Dead hex-token confirmation system (`os_control/confirmation.py`,
+  `os_control/persistence.py`, `core/command_parser.py`,
+  `core/command_router.py`) — fully superseded by the spoken-PIN flow;
+  `store_confirmation()`, the only function that ever wrote a token, had
+  zero callers. See CLEANUP_REPORT.md for the full trace.
+- Broken/unimplemented Claude LLM backend (`JARVIS_LLM_BACKEND=claude`) —
+  `llm/claude_client.py` never existed, so selecting it crashed the first
+  LLM query. Removed the dead call sites, config keys, and the `anthropic`
+  dependency; Ollama remains the only (working) LLM backend.
+- Unused `CONFIRMATION_TOKEN_BYTES`/`CONFIRMATION_TOKEN_MIN_HEX_LEN` config.
+
+### Fixed
+- `_update_short_term_context` recorded the last-used app/file after a
+  confirmed destructive action by checking a dead intent name
+  (`OS_CONFIRMATION`), so it silently never ran under the PIN system.
+  Fixed to check `OS_PIN_CONFIRM`, its live equivalent.
+
+### Changed
+
+- `.gitignore` now covers `.swarm/` and `jarvis.log*` to prevent recurrence.
+
 ## 2026-04-09 - Release Hardening and Speech Quality Update
 
 ### Added

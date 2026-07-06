@@ -1402,38 +1402,6 @@ class SessionMemory:
             lines = _collect_context(filter_language=False)
         return "\n".join(lines)
 
-    def get_messages_for_claude(self, limit: int = 5, language: str | None = None) -> list[dict]:
-        """Return the last `limit` turns as Claude-format messages for conversation context.
-
-        Returns a list of {"role": "user"/"assistant", "content": str} dicts,
-        ordered oldest-first, suitable for prepending to a Claude messages array.
-        """
-        if not self.is_enabled():
-            return []
-        rows = self.recent(limit=limit * 2)  # fetch extra, then trim to limit after filtering
-        if not rows:
-            return []
-
-        target_language = str(language or "").strip().lower()
-
-        messages: list[dict] = []
-        for row in rows:
-            user_text = (row.get("user") or "").strip()
-            assistant_text = _sanitize_assistant_text(row.get("assistant"))
-            if not user_text or _is_low_value_assistant_text(assistant_text):
-                continue
-            if target_language and target_language in _SUPPORTED_LANGUAGES:
-                row_lang = str(row.get("language") or "").strip().lower()
-                if row_lang and row_lang != target_language:
-                    continue
-            messages.append({"role": "user", "content": user_text})
-            messages.append({"role": "assistant", "content": assistant_text})
-
-        # Keep only the most recent `limit` turns
-        if len(messages) > limit * 2:
-            messages = messages[-(limit * 2):]
-        return messages
-
     def status(self):
         with self._lock:
             count = len(self._turns)

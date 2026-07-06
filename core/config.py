@@ -293,18 +293,6 @@ STT_ENGLISH_WHISPER_MODEL = _env("JARVIS_STT_ENGLISH_WHISPER_MODEL", "auto").str
 STT_ENGLISH_BEAM_SIZE = max(1, _env_int("JARVIS_STT_ENGLISH_BEAM_SIZE", 5))
 
 # LLM
-# LLM_BACKEND: "claude" uses Anthropic Claude API; "ollama" uses local Ollama (default).
-LLM_BACKEND = str(_env("JARVIS_LLM_BACKEND", "ollama")).strip().lower()
-if LLM_BACKEND not in {"claude", "ollama"}:
-    LLM_BACKEND = "ollama"
-
-# Claude API (used when LLM_BACKEND=claude)
-ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "").strip()
-CLAUDE_DEFAULT_MODEL = _env("JARVIS_CLAUDE_DEFAULT_MODEL", "claude-haiku-4-5").strip()
-CLAUDE_QUALITY_MODEL = _env("JARVIS_CLAUDE_QUALITY_MODEL", "claude-sonnet-4-6").strip()
-CLAUDE_MAX_TOKENS_COMMAND = max(64, _env_int("JARVIS_CLAUDE_MAX_TOKENS_COMMAND", 256))
-CLAUDE_MAX_TOKENS_QUESTION = max(128, _env_int("JARVIS_CLAUDE_MAX_TOKENS_QUESTION", 600))
-
 LLM_MODEL = _env("JARVIS_LLM_MODEL", "qwen3:4b")
 LLM_AUTO_SELECT_MODEL = _env_bool("JARVIS_LLM_AUTO_SELECT", True)
 LLM_FALLBACK_MODELS = tuple(
@@ -782,17 +770,10 @@ POWERSHELL_EXECUTABLE = _env("JARVIS_POWERSHELL_EXECUTABLE", "powershell")
 ACTION_LOG_FILE = _env("JARVIS_ACTION_LOG_FILE", "").strip() or _data_path("logs", "jarvis_actions.log")
 ROLLBACK_DIR_NAME = ".jarvis_rollback"
 CONFIRMATION_TIMEOUT_SECONDS = 45
-# Deprecated: the hex-token confirmation system is retired in favor of a
-# spoken PIN (see SENSITIVE_CONFIRM_MODE below). Kept only for any remaining
-# legacy references during the Phase 1->9 transition; Phase 9 removes them.
-CONFIRMATION_TOKEN_BYTES = max(4, min(32, _env_int("JARVIS_CONFIRMATION_TOKEN_BYTES", 8)))
-CONFIRMATION_TOKEN_MIN_HEX_LEN = max(
-    6,
-    min(
-        CONFIRMATION_TOKEN_BYTES * 2,
-        _env_int("JARVIS_CONFIRMATION_TOKEN_MIN_HEX_LEN", 6),
-    ),
-)
+# The hex-token confirmation system (CONFIRMATION_TOKEN_BYTES/MIN_HEX_LEN) has
+# been fully retired in favor of the spoken PIN (see SENSITIVE_CONFIRM_MODE
+# below). These two remain live: second_factor.py's rate limiter still uses
+# them to throttle PIN attempts.
 CONFIRMATION_MAX_ATTEMPTS_PER_TOKEN = _env_int("JARVIS_CONFIRMATION_MAX_ATTEMPTS_PER_TOKEN", 6)
 CONFIRMATION_LOCKOUT_SECONDS = _env_int("JARVIS_CONFIRMATION_LOCKOUT_SECONDS", 120)
 ALLOW_DESTRUCTIVE_SYSTEM_COMMANDS = False

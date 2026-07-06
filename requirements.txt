@@ -42,12 +42,7 @@ psutil==7.2.2
 # NLP fuzzy matching for intent resolution
 rapidfuzz==3.14.3
 
-# === TIER 3: OPTIONAL LLM BACKENDS ===
-# Claude API support (Ollama is primary); telemetry & metrics
-
-# Claude API (optional backend; Ollama primary)
-anthropic>=0.40.0
-
+# === TIER 3: TELEMETRY ===
 # Telemetry & metrics for production observability
 # (Included in core/ for phase 6-7 structured logging)
 
