@@ -58,6 +58,7 @@ from utils.language_detector import detect_language
 
 _LOCAL_BACKEND = "faster_whisper"
 _HYBRID_BACKEND = "hybrid_elevenlabs"
+_SCRIBE_BACKEND = "elevenlabs_scribe"          # canonical primary backend
 _ELEVENLABS_METHOD = "elevenlabs_stt"
 
 _BACKEND_ALIASES = {
@@ -72,6 +73,9 @@ _BACKEND_ALIASES = {
     "faster-whisper": _LOCAL_BACKEND,
     "faster whisper": _LOCAL_BACKEND,
 }
+# Alias legacy names onto the clean Scribe path. Kept separate from
+# _BACKEND_ALIASES (still resolving to _HYBRID_BACKEND) until Phase 2 rewires
+# the default so the hybrid cascade stays the active path through Phase 1.
 
 _ELEVENLABS_COOLDOWN_UNTIL = 0.0
 _STT_LOG = get_logger("stt")
@@ -1060,6 +1064,96 @@ def _transcribe_with_elevenlabs(
     }
 
 
+def _scribe_language_code(language_hint: str) -> Optional[str]:
+    """Return the ElevenLabs language_code to send, or None to auto-detect.
+
+    Sending no code lets Scribe v2 auto-detect and transcribe mixed EN/AR in
+    one file — the behavior we want for auto/mixed. For an explicit Arabic
+    selection we may pin 'ara' depending on config.
+    """
+    mode = str(STT_ELEVENLABS_SEND_LANGUAGE_CODE or "auto").strip().lower()
+    hint = _normalize_detected_language(language_hint or "")
+    if mode == "never":
+        return None
+    if mode == "always":
+        return "ara" if hint == "ar" else "eng"
+    # mode == "auto": pin only for an explicit Arabic request; auto-detect otherwise
+    return "ara" if hint == "ar" else None
+
+
+def _transcribe_scribe_v2(
+    audio_file: str,
+    language_hint: str = "auto",
+    on_partial: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """Single, direct Scribe v2 (batch) call. No cascade."""
+    if is_shutdown_requested():
+        raise RuntimeError("STT shutdown requested")
+    if not bool(STT_ELEVENLABS_ENABLED):
+        raise RuntimeError("ElevenLabs STT is disabled")
+    if _elevenlabs_on_cooldown():
+        raise RuntimeError("ElevenLabs STT cooldown active")
+    api_key = str(ELEVENLABS_API_KEY or "").strip()
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not configured")
+
+    path = Path(audio_file)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"Audio file not found: {audio_file}")
+    duration_seconds = _audio_duration_seconds(str(path))
+    if duration_seconds > float(STT_MAX_AUDIO_SECONDS):
+        raise RuntimeError(
+            f"Audio duration {duration_seconds:.2f}s exceeds cloud STT cap {float(STT_MAX_AUDIO_SECONDS):.2f}s"
+        )
+
+    endpoint = f"{str(ELEVENLABS_BASE_URL or 'https://api.elevenlabs.io').rstrip('/')}/v1/speech-to-text"
+    data = {
+        "model_id": str(STT_ELEVENLABS_STT_MODEL or "scribe_v2"),
+        "tag_audio_events": "false",
+        "diarize": "false",
+    }
+    lang_code = _scribe_language_code(language_hint)
+    if lang_code:
+        data["language_code"] = lang_code
+
+    with stage_timer("stt_scribe_call", lang=language_hint or "auto"):
+        with path.open("rb") as audio_handle:
+            response = get_cloud_http_client().post(
+                endpoint,
+                headers={"xi-api-key": api_key},
+                data=data,
+                files={"file": (path.name or "audio.wav", audio_handle, "audio/wav")},
+            )
+
+    if response.status_code >= 400:
+        error_preview = (response.text or "").strip().replace("\n", " ")[:220]
+        if response.status_code in {401, 429} or "quota_exceeded" in error_preview:
+            _set_elevenlabs_cooldown(f"http_{response.status_code}: {error_preview}")
+        raise RuntimeError(f"ElevenLabs Scribe HTTP {response.status_code}: {error_preview}")
+
+    payload = response.json() if response.content else {}
+    text = str(payload.get("text") or payload.get("transcript") or payload.get("result") or "").strip()
+    if text and _normalize_detected_language(detect_language(text)) == "ar":
+        text = normalize_arabic_post_transcript(text)
+    detected = _normalize_detected_language(
+        str(payload.get("language_code") or payload.get("language") or "")
+    )
+    if not detected and text:
+        detected = _normalize_detected_language(detect_language(text))
+
+    _safe_partial_emit(on_partial, text)
+    return {
+        "text": text,
+        "confidence": float(payload.get("confidence") or payload.get("average_confidence") or 0.0),
+        "language": detected or _normalize_detected_language(language_hint) or "",
+        "backend": _SCRIBE_BACKEND,
+        "method": "scribe_v2",
+        "fallback_used": False,
+        "audio_duration": duration_seconds,
+        "audio_rms": _audio_rms(str(path)),
+    }
+
+
 def _opposite_language(lang: str) -> str:
     return "en" if lang == "ar" else "ar"
 
@@ -1527,11 +1621,10 @@ def transcribe_backend_direct_with_meta(
                     audio_rms=float(result.get("audio_rms") or 0.0),
                 )
     else:
-        result = _transcribe_with_hybrid_elevenlabs(
+        result = _transcribe_scribe_v2(
             audio_file,
-            language_hint=language_hint,
+            language_hint=language_hint or _runtime_language_hint(),
             on_partial=on_partial,
-            streaming_text=streaming_text,
         )
 
     latency_ms = (time.perf_counter() - start) * 1000.0
