@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import type { UICommand, FeatureFlags } from '../../protocol';
 import { backToOverlay, closeApp } from '../../lib/app';
 import { GradientBackground } from '../GradientBackground';
@@ -180,6 +180,67 @@ function Notice({
         </svg>
       </button>
     </div>
+  );
+}
+
+// Masked numeric PIN field for the Security section. Validates length
+// client-side (4-8 digits) so an obviously bad value never round-trips to the
+// engine; the engine still re-validates and reports a dismissible error if
+// something slips through.
+function SecuritySection({ pinSet, send }: { pinSet: boolean; send: (cmd: UICommand) => void }) {
+  const [pin, setPin] = useState('');
+  const [justUpdated, setJustUpdated] = useState(false);
+
+  const trimmed = pin.trim();
+  const isValid = /^\d{4,8}$/.test(trimmed);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isValid) {
+      return;
+    }
+    send({ type: 'setting_update', key: 'JARVIS_SECOND_FACTOR_PIN', value: trimmed });
+    setPin('');
+    setJustUpdated(true);
+    window.setTimeout(() => setJustUpdated(false), 3000);
+  };
+
+  return (
+    <Section title="Security">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-sm font-medium text-white/72">Destructive-command PIN</span>
+        <span className="rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold text-white/70">
+          {pinSet ? 'PIN set ••••' : 'Default PIN (insecure)'}
+        </span>
+      </div>
+      <form onSubmit={handleSubmit} className="flex items-center gap-2">
+        <input
+          type="password"
+          inputMode="numeric"
+          autoComplete="off"
+          value={pin}
+          onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
+          placeholder="New PIN (4-8 digits)"
+          className="h-10 min-w-0 flex-1 rounded border border-white/10 bg-[#111118] px-3 text-sm text-white outline-none transition focus:border-[#8EEBFF]/65"
+        />
+        <button
+          type="submit"
+          disabled={!isValid}
+          className="h-10 shrink-0 rounded border border-[#8EEBFF]/30 bg-[#8EEBFF]/12 px-3 text-sm font-semibold text-[#DDFBFF] transition hover:bg-[#8EEBFF]/18 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Update PIN
+        </button>
+      </form>
+      {justUpdated ? (
+        <p className="text-[11px] font-normal text-emerald-500 dark:text-emerald-300">
+          PIN updated — required immediately for destructive commands, no restart needed.
+        </p>
+      ) : (
+        <p className="text-[11px] font-normal text-slate-500 dark:text-white/45">
+          Required to confirm destructive voice commands (e.g. emptying the recycle bin). Never shown once set.
+        </p>
+      )}
+    </Section>
   );
 }
 
@@ -373,6 +434,8 @@ export function Dashboard({ send }: DashboardProps) {
           <Section title="Audio">
             <Toggle label="Mute microphone and speech" checked={muted} onChange={handleMutedChange} />
           </Section>
+
+          <SecuritySection pinSet={config?.pin_set ?? false} send={send} />
 
           <Section title="Status">
             <dl className="grid gap-3 text-sm">

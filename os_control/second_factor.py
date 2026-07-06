@@ -10,10 +10,9 @@ from core.config import (
     SECOND_FACTOR_LOCKOUT_SECONDS,
     SECOND_FACTOR_MAX_ATTEMPTS_PER_TOKEN,
     SECOND_FACTOR_PASSPHRASE,
-    SECOND_FACTOR_PIN,
+    get_second_factor_pin,
 )
 
-_PIN_HASH = hashlib.sha256(SECOND_FACTOR_PIN.encode("utf-8")).hexdigest()
 _PASSPHRASE_HASH = hashlib.sha256(SECOND_FACTOR_PASSPHRASE.encode("utf-8")).hexdigest()
 _LOCK = threading.Lock()
 _ATTEMPTS = {}
@@ -142,7 +141,8 @@ def verify_second_factor(secret, token=""):
             return False, f"Too many failed second-factor attempts. Retry in {remaining}s."
 
     candidate = _hash(secret)
-    verified = hmac.compare_digest(candidate, _PIN_HASH) or hmac.compare_digest(candidate, _PASSPHRASE_HASH)
+    pin_hash = hashlib.sha256(get_second_factor_pin().encode("utf-8")).hexdigest()
+    verified = hmac.compare_digest(candidate, pin_hash) or hmac.compare_digest(candidate, _PASSPHRASE_HASH)
 
     with _LOCK:
         state = _ATTEMPTS.setdefault(key, {"failed_attempts": 0, "blocked_until": 0.0})

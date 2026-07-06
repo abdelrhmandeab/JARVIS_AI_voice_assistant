@@ -126,7 +126,13 @@ export const useJarvisStore = create<JarvisState>()(
             });
             break;
           case 'error':
-            set({ lastError: event.message });
+            set((state) => ({
+              lastError: event.message,
+              notifications: [
+                ...state.notifications,
+                { id: crypto.randomUUID(), tone: 'error', message: event.message },
+              ],
+            }));
             break;
           case 'config':
             set({ config: event.values });

@@ -804,6 +804,42 @@ SECOND_FACTOR_PASSPHRASE = _env("JARVIS_SECOND_FACTOR_PASSPHRASE", "")
 SECOND_FACTOR_MAX_ATTEMPTS_PER_TOKEN = _env_int("JARVIS_SECOND_FACTOR_MAX_ATTEMPTS_PER_TOKEN", 3)
 SECOND_FACTOR_LOCKOUT_SECONDS = _env_int("JARVIS_SECOND_FACTOR_LOCKOUT_SECONDS", 120)
 
+# Runtime override for the destructive-command PIN, so the dashboard can change
+# it without a restart. os_control/second_factor.py reads the live value via
+# get_second_factor_pin() instead of the frozen SECOND_FACTOR_PIN constant.
+_RUNTIME_OVERRIDES = {"second_factor_pin": SECOND_FACTOR_PIN}
+
+
+def get_second_factor_pin() -> str:
+    return str(_RUNTIME_OVERRIDES.get("second_factor_pin") or SECOND_FACTOR_PIN)
+
+
+def set_second_factor_pin(pin: str) -> bool:
+    pin = str(pin or "").strip()
+    if pin.isdigit() and 4 <= len(pin) <= 8:
+        _RUNTIME_OVERRIDES["second_factor_pin"] = pin
+        return True
+    return False
+
+
+def persist_env_var(key: str, value: str, env_path: str = "") -> None:
+    """Upsert a single key in the .env file without touching the rest of it."""
+    env_path = env_path or str(PROJECT_ROOT / ".env")
+    lines = []
+    found = False
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}\n")
+    with open(env_path, "w", encoding="utf-8") as fh:
+        fh.writelines(lines)
+
 # Spoken-PIN confirmation (Phase 1). Sensitive commands prompt for the PIN
 # instead of a hex token; the next utterance is treated as the PIN.
 SENSITIVE_CONFIRM_MODE = str(_env("JARVIS_SENSITIVE_CONFIRM_MODE", "pin")).strip().lower()
