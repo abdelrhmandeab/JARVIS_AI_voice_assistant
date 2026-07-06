@@ -285,6 +285,13 @@ STT_BEAM_SIZE_SHORT_THRESHOLD_SECONDS = max(
 STT_NO_SPEECH_THRESHOLD = max(0.0, min(1.0, _env_float("JARVIS_STT_NO_SPEECH_THRESHOLD", 0.70)))
 STT_MIN_AUDIO_RMS = max(0.0, _env_float("JARVIS_STT_MIN_AUDIO_RMS", 0.005))
 
+# English-only local whisper tuning (English is the sole language on this path
+# per STT_ENGLISH_ENGINE, so we can afford accuracy-first decode settings).
+# "auto" scales the *.en model with detected hardware (core/hardware_detect.py);
+# small.en/medium.en beat the same-size multilingual model on English and are smaller.
+STT_ENGLISH_WHISPER_MODEL = _env("JARVIS_STT_ENGLISH_WHISPER_MODEL", "auto").strip() or "auto"
+STT_ENGLISH_BEAM_SIZE = max(1, _env_int("JARVIS_STT_ENGLISH_BEAM_SIZE", 5))
+
 # LLM
 # LLM_BACKEND: "claude" uses Anthropic Claude API; "ollama" uses local Ollama (default).
 LLM_BACKEND = str(_env("JARVIS_LLM_BACKEND", "ollama")).strip().lower()
