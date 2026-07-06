@@ -36,7 +36,7 @@ class VoiceProfile:
 DEFAULT_PROFILES: dict[str, VoiceProfile] = {
     "jarvis_male_classic": VoiceProfile(
         name="jarvis_male_classic",
-        elevenlabs_voice_id="",
+        elevenlabs_voice_id="IES4nrmZdUBHByLBde0P",
         edge_voice_en="en-US-GuyNeural",
         edge_voice_ar="ar-EG-ShakirNeural",
         edge_voice_en_fallbacks=("en-US-AriaNeural", "en-GB-RyanNeural"),
@@ -52,7 +52,7 @@ DEFAULT_PROFILES: dict[str, VoiceProfile] = {
     ),
     "jarvis_female_warm": VoiceProfile(
         name="jarvis_female_warm",
-        elevenlabs_voice_id="",
+        elevenlabs_voice_id="L10lEremDiJfPicq5CPh",
         edge_voice_en="en-US-AriaNeural",
         edge_voice_ar="ar-EG-SalmaNeural",
         edge_voice_en_fallbacks=("en-US-JennyNeural", "en-GB-SoniaNeural"),
